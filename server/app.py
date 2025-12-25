@@ -7,11 +7,13 @@ import asyncio
 import json
 import aiosqlite
 import signal
+import os
+from pathlib import Path
 from protocol import validate_batch, MAX_LINE_SIZE
 
 
-# Database configuration
-DB_FILE = "data/weather.db"
+# Database configuration - use environment variable with absolute path fallback
+DB_FILE = os.getenv("DB_PATH", "/app/data/weather.db")
 
 # Server configuration
 HOST = "0.0.0.0"
@@ -41,6 +43,10 @@ def _safe_json_loads(data: str):
 
 async def init_database():
     """Initialize SQLite database and create table if it doesn't exist."""
+    # Ensure directory exists
+    db_path = Path(DB_FILE)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS readings (

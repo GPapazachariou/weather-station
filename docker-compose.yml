@@ -1,0 +1,123 @@
+version: '3.8'
+
+services:
+  # TCP Server - receives weather data and stores in SQLite
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: weather-server
+    ports:
+      - "12345:12345"
+    volumes:
+      # Persistent storage for SQLite database
+      - weather-data:/app/data
+    environment:
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=12345
+      - DB_PATH=/app/data/weather.db
+    restart: unless-stopped
+    networks:
+      - weather-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('localhost',12345)); s.close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Weather Station Client 1
+  station-001:
+    build:
+      context: ./station_client
+      dockerfile: Dockerfile
+    container_name: weather-station-001
+    environment:
+      - WEATHER_STATION_HOST=server
+      - WEATHER_STATION_PORT=12345
+      - WEATHER_STATION_ID=STATION-001
+      - WEATHER_STATION_BATCH_MIN=1
+      - WEATHER_STATION_BATCH_MAX=1
+      - WEATHER_STATION_BATCH_INTERVAL=5
+      - WEATHER_STATION_TIMEOUT=5.0
+      - WEATHER_STATION_MAX_RETRIES=3
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - weather-network
+
+  # Weather Station Client 2
+  station-002:
+    build:
+      context: ./station_client
+      dockerfile: Dockerfile
+    container_name: weather-station-002
+    environment:
+      - WEATHER_STATION_HOST=server
+      - WEATHER_STATION_PORT=12345
+      - WEATHER_STATION_ID=STATION-002
+      - WEATHER_STATION_BATCH_MIN=1
+      - WEATHER_STATION_BATCH_MAX=1
+      - WEATHER_STATION_BATCH_INTERVAL=5
+      - WEATHER_STATION_TIMEOUT=5.0
+      - WEATHER_STATION_MAX_RETRIES=3
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - weather-network
+
+  # Weather Station Client 3
+  station-003:
+    build:
+      context: ./station_client
+      dockerfile: Dockerfile
+    container_name: weather-station-003
+    environment:
+      - WEATHER_STATION_HOST=server
+      - WEATHER_STATION_PORT=12345
+      - WEATHER_STATION_ID=STATION-003
+      - WEATHER_STATION_BATCH_MIN=1
+      - WEATHER_STATION_BATCH_MAX=1
+      - WEATHER_STATION_BATCH_INTERVAL=5
+      - WEATHER_STATION_TIMEOUT=5.0
+      - WEATHER_STATION_MAX_RETRIES=3
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - weather-network
+
+  # Web Dashboard - Flask UI for viewing data
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: weather-web
+    ports:
+      - "8000:8000"
+    volumes:
+      # Share the same database volume (read-only for web)
+      - weather-data:/app/data:ro
+    environment:
+      - WEATHER_DB_PATH=/app/data/weather.db
+      - WEB_HOST=0.0.0.0
+      - WEB_PORT=8000
+    depends_on:
+      - server
+    restart: unless-stopped
+    networks:
+      - weather-network
+
+volumes:
+  # Named volume for persistent SQLite database
+  weather-data:
+    driver: local
+
+networks:
+  weather-network:
+    driver: bridge

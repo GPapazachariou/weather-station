@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weather Station Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🌤️ Weather Station Dashboard</h1>
+            <p class="subtitle">Real-time weather monitoring</p>
+        </header>
+
+        <!-- Controls -->
+        <div class="controls-section">
+            <select id="station-select" class="dropdown">
+                <option value="">Loading stations...</option>
+            </select>
+            <select id="metric-select" class="dropdown">
+                <option value="temperature">Temperature (°C)</option>
+                <option value="humidity">Humidity (%)</option>
+                <option value="windspeed">Wind Speed (m/s)</option>
+            </select>
+            <select id="range-select" class="dropdown">
+                <option value="6h">Last 6 hours</option>
+                <option value="24h" selected>Last 24 hours</option>
+            </select>
+            <label class="toggle-label">
+                <input type="checkbox" id="toggleRaw" checked>
+                <span>Show raw data</span>
+            </label>
+            <label class="toggle-label">
+                <input type="checkbox" id="toggleRolling" checked>
+                <span>Show rolling avg</span>
+            </label>
+            <select id="rollingWindow" class="dropdown">
+                <option value="3">Window: 3</option>
+                <option value="5">Window: 5</option>
+                <option value="10" selected>Window: 10</option>
+                <option value="20">Window: 20</option>
+                <option value="30">Window: 30</option>
+            </select>
+        </div>
+
+        <!-- Empty State -->
+        <div id="empty-state" class="empty-state" style="display: none;">
+            <p>📊 No stations or data available yet.</p>
+            <p>Start the weather station client to begin collecting data.</p>
+        </div>
+
+        <!-- Stats Cards -->
+        <div id="stats-container" class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Latest</div>
+                <div class="stat-value" id="stat-latest">--</div>
+                <div class="stat-time" id="stat-latest-time"></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Average</div>
+                <div class="stat-value" id="stat-avg">--</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Minimum</div>
+                <div class="stat-value" id="stat-min">--</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Maximum</div>
+                <div class="stat-value" id="stat-max">--</div>
+            </div>
+        </div>
+
+        <!-- Chart -->
+        <div id="chart-container" class="chart-section">
+            <div class="loading" id="chart-loading">Loading chart...</div>
+            <canvas id="data-chart" style="display: none;"></canvas>
+        </div>
+
+        <!-- Fallback Table -->
+        <div id="table-container" style="display: none;">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Value</th>
+                    </tr>
+                </thead>
+                <tbody id="table-body">
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
