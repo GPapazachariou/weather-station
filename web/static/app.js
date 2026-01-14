@@ -10,7 +10,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Setup event listeners
     document.getElementById('station-select').addEventListener('change', refreshAll);
     document.getElementById('metric-select').addEventListener('change', refreshAll);
-    document.getElementById('range-select').addEventListener('change', refreshAll);
+    document.getElementById('range-select').addEventListener('change', onRangeChange);
+    document.getElementById('limit-select').addEventListener('change', refreshAll);
     document.getElementById('toggleRaw').addEventListener('change', refreshAll);
     document.getElementById('toggleRolling').addEventListener('change', refreshAll);
     document.getElementById('rollingWindow').addEventListener('change', refreshAll);
@@ -54,37 +55,71 @@ async function loadStations() {
 }
 
 /**
+ * Handle range selector change - show/hide limit selector
+ */
+function onRangeChange() {
+    const rangeSelect = document.getElementById('range-select').value;
+    const limitSelect = document.getElementById('limit-select');
+    
+    if (rangeSelect === 'limit') {
+        limitSelect.style.display = 'inline-block';
+    } else {
+        limitSelect.style.display = 'none';
+    }
+    
+    refreshAll();
+}
+
+/**
  * Refresh stats and chart when selection changes
  */
 async function refreshAll() {
     const station = document.getElementById('station-select').value;
     const metric = document.getElementById('metric-select').value;
-    const range = document.getElementById('range-select').value;
+    const rangeSelect = document.getElementById('range-select');
+    const range = rangeSelect.value;
+    const limitSelect = document.getElementById('limit-select');
     
     if (!station) {
         showEmptyState();
         return;
     }
     
-    console.log(`[Refresh] ${station} / ${metric} / ${range}`);
+    // Build query params
+    let queryParams = `?station_id=${encodeURIComponent(station)}&metric=${encodeURIComponent(metric)}`;
+    if (range === 'limit') {
+        const limit = limitSelect.value;
+        if (!limit) {
+            showEmptyState();
+            return;
+        }
+        queryParams += `&limit=${encodeURIComponent(limit)}`;
+        console.log(`[Refresh] ${station} / ${metric} / last ${limit} values`);
+    } else {
+        queryParams += `&range=${encodeURIComponent(range)}`;
+        console.log(`[Refresh] ${station} / ${metric} / ${range}`);
+    }
     
     // Hide empty state
     document.getElementById('empty-state').style.display = 'none';
     document.getElementById('stats-container').style.display = 'grid';
     
+    // Store params for API calls
+    const apiParams = queryParams;
+    
     // Fetch both in parallel
     await Promise.all([
-        fetchStats(station, metric, range),
-        fetchReadings(station, metric, range)
+        fetchStats(apiParams),
+        fetchReadings(apiParams)
     ]);
 }
 
 /**
  * Fetch and display stats
  */
-async function fetchStats(station, metric, range) {
+async function fetchStats(queryParams) {
     try {
-        const url = `/api/stats?station_id=${encodeURIComponent(station)}&metric=${encodeURIComponent(metric)}&range=${encodeURIComponent(range)}`;
+        const url = `/api/stats${queryParams}`;
         const response = await fetch(url);
         const data = await response.json();
         
@@ -108,9 +143,9 @@ async function fetchStats(station, metric, range) {
 /**
  * Fetch and display readings (chart or table)
  */
-async function fetchReadings(station, metric, range) {
+async function fetchReadings(queryParams) {
     try {
-        const url = `/api/readings?station_id=${encodeURIComponent(station)}&metric=${encodeURIComponent(metric)}&range=${encodeURIComponent(range)}`;
+        const url = `/api/readings${queryParams}`;
         const response = await fetch(url);
         const data = await response.json();
         const points = data.points || [];
@@ -123,6 +158,9 @@ async function fetchReadings(station, metric, range) {
             document.getElementById('chart-loading').style.display = 'block';
             return;
         }
+        
+        // Get metric from URL params for chart rendering
+        const metric = new URLSearchParams(queryParams).get('metric');
         
         // Prepare rolling average if enabled
         const rawEnabled = document.getElementById('toggleRaw').checked;

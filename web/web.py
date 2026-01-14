@@ -25,6 +25,13 @@ VALID_RANGES = {
     "6h": timedelta(hours=6),
     "24h": timedelta(hours=24),
 }
+# Valid record-count ranges (for "last n values" option)
+VALID_LIMITS = {
+    "10": 10,
+    "50": 50,
+    "100": 100,
+    "500": 500,
+}
 # Valid metrics - we'll detect actual column name at runtime
 VALID_METRICS = {"temperature", "humidity", "windspeed"}
 
@@ -118,7 +125,8 @@ def api_stats():
     Query params:
       - station_id (required)
       - metric (required): temperature, humidity, or windspeed
-      - range (required): 1h, 6h, 24h, or 7d
+      - range (optional): 6h, 24h (time-based) or limit param for record-based
+      - limit (optional): 10, 50, 100, 500 (for last n values)
     
     Returns:
       {"latest": 23.5, "latest_t": "2025-12-25T12:00:00", "avg": 22.1, "min": 20.0, "max": 25.5}
@@ -126,9 +134,10 @@ def api_stats():
     station_id = request.args.get("station_id", "").strip()
     metric = request.args.get("metric", "").strip()
     time_range = request.args.get("range", "24h").strip()
+    limit = request.args.get("limit", "").strip()
 
     # Validation
-    if not station_id or metric not in VALID_METRICS or time_range not in VALID_RANGES:
+    if not station_id or metric not in VALID_METRICS:
         return (
             jsonify(
                 {
@@ -143,8 +152,25 @@ def api_stats():
             400,
         )
 
-    # Calculate time window
-    cutoff = datetime.now() - VALID_RANGES[time_range]
+    # Determine if we're using time-based or record-based filtering
+    use_limit = limit and limit in VALID_LIMITS
+    if not use_limit and time_range not in VALID_RANGES:
+        return (
+            jsonify(
+                {
+                    "error": "Invalid range or limit",
+                    "latest": None,
+                    "latest_t": None,
+                    "avg": None,
+                    "min": None,
+                    "max": None,
+                }
+            ),
+            400,
+        )
+
+    # Calculate time window (if time-based)
+    cutoff = datetime.now() - VALID_RANGES[time_range] if not use_limit else None
 
     try:
         conn = get_db()
@@ -164,20 +190,28 @@ def api_stats():
         rows = cursor.fetchall()
         conn.close()
 
-        # Filter by time range and ignore nulls
+        # Filter by time range or limit, and ignore nulls
         values = []
         latest = None
         latest_t = None
+        count = 0
+        max_records = VALID_LIMITS[limit] if use_limit else float('inf')
 
         for row in rows:
+            if use_limit and count >= max_records:
+                break
+            
             dt = parse_timestamp(row["timestamp"])
-            if dt and dt >= cutoff:
-                val = row[db_metric]
-                if val is not None:
-                    values.append(val)
-                    if latest is None:
-                        latest = val
-                        latest_t = row["timestamp"]
+            if not use_limit and (not dt or dt < cutoff):
+                continue
+            
+            val = row[db_metric]
+            if val is not None:
+                values.append(val)
+                if latest is None:
+                    latest = val
+                    latest_t = row["timestamp"]
+                count += 1
 
         # Calculate stats
         if values:
@@ -197,7 +231,8 @@ def api_stats():
                 "max": None,
             }
 
-        logger.info(f"Stats for {station_id}/{metric}/{time_range}: {len(values)} points")
+        range_label = f"limit={limit}" if use_limit else f"range={time_range}"
+        logger.info(f"Stats for {station_id}/{metric}/{range_label}: {len(values)} points")
         return jsonify(result)
 
     except Exception as e:
@@ -220,7 +255,8 @@ def api_readings():
     Query params:
       - station_id (required)
       - metric (required): temperature, humidity, or windspeed
-      - range (required): 1h, 6h, 24h, or 7d
+      - range (optional): 6h, 24h (time-based) or limit param for record-based
+      - limit (optional): 10, 50, 100, 500 (for last n values)
     
     Returns:
       {"points": [{"t": "2025-12-25T10:00:00", "v": 23.1}, ...]}
@@ -229,13 +265,19 @@ def api_readings():
     station_id = request.args.get("station_id", "").strip()
     metric = request.args.get("metric", "").strip()
     time_range = request.args.get("range", "24h").strip()
+    limit = request.args.get("limit", "").strip()
 
     # Validation
-    if not station_id or metric not in VALID_METRICS or time_range not in VALID_RANGES:
+    if not station_id or metric not in VALID_METRICS:
         return jsonify({"error": "Invalid parameters", "points": []}), 400
 
-    # Calculate time window
-    cutoff = datetime.now() - VALID_RANGES[time_range]
+    # Determine if we're using time-based or record-based filtering
+    use_limit = limit and limit in VALID_LIMITS
+    if not use_limit and time_range not in VALID_RANGES:
+        return jsonify({"error": "Invalid range or limit", "points": []}), 400
+
+    # Calculate time window (if time-based)
+    cutoff = datetime.now() - VALID_RANGES[time_range] if not use_limit else None
 
     try:
         conn = get_db()
@@ -255,17 +297,27 @@ def api_readings():
         rows = cursor.fetchall()
         conn.close()
 
-        # Filter by time range and ignore nulls, order oldest -> newest
+        # Filter by time range or limit, and ignore nulls, order oldest -> newest
         points = []
+        count = 0
+        max_records = VALID_LIMITS[limit] if use_limit else float('inf')
+        
         for row in rows:
+            if use_limit and count >= max_records:
+                break
+            
             dt = parse_timestamp(row["timestamp"])
-            if dt and dt >= cutoff:
-                val = row[db_metric]
-                if val is not None:
-                    points.append({"t": row["timestamp"], "v": val})
+            if not use_limit and (not dt or dt < cutoff):
+                continue
+            
+            val = row[db_metric]
+            if val is not None:
+                points.append({"t": row["timestamp"], "v": val})
+                count += 1
 
+        range_label = f"limit={limit}" if use_limit else f"range={time_range}"
         logger.info(
-            f"Readings for {station_id}/{metric}/{time_range}: {len(points)} points"
+            f"Readings for {station_id}/{metric}/{range_label}: {len(points)} points"
         )
         return jsonify({"points": points})
 
