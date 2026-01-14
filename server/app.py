@@ -202,6 +202,95 @@ async def enqueue_batch(batch):
         raise
 
 
+async def handle_consumer_request(req, addr):
+    """
+    Handle a consumer read-only request.
+    
+    req: dict with "request" key and optional parameters (station_id, limit, etc.)
+    addr: client address for logging
+    
+    Returns: dict response with "status" and data fields (or error).
+    """
+    try:
+        request_type = req.get("request")
+        
+        if request_type == "stations":
+            # Supported: {"request":"stations"}
+            # Return: {"status":"ok","stations":[...]}
+            async with aiosqlite.connect(DB_FILE) as db:
+                await db.execute("PRAGMA busy_timeout=3000;")
+                cursor = await db.execute(
+                    "SELECT DISTINCT station_id FROM readings ORDER BY station_id"
+                )
+                rows = await cursor.fetchall()
+                stations = [row[0] for row in rows]
+            return {"status": "ok", "stations": stations}
+        
+        elif request_type == "latest":
+            # Supported: {"request":"latest"} or {"request":"latest","station_id":"..."}
+            # Return: {"status":"ok","reading":{...} or null}
+            station_id = req.get("station_id")
+            
+            async with aiosqlite.connect(DB_FILE) as db:
+                await db.execute("PRAGMA busy_timeout=3000;")
+                db.row_factory = aiosqlite.Row
+                
+                if station_id:
+                    cursor = await db.execute(
+                        "SELECT station_id, timestamp, temperature, humidity, windspeed FROM readings WHERE station_id = ? ORDER BY id DESC LIMIT 1",
+                        (station_id,)
+                    )
+                else:
+                    cursor = await db.execute(
+                        "SELECT station_id, timestamp, temperature, humidity, windspeed FROM readings ORDER BY id DESC LIMIT 1"
+                    )
+                
+                row = await cursor.fetchone()
+                reading = dict(row) if row else None
+            
+            return {"status": "ok", "reading": reading}
+        
+        elif request_type == "recent":
+            # Supported: {"request":"recent","limit":50} or with "station_id"
+            # Return: {"status":"ok","readings":[...]}
+            station_id = req.get("station_id")
+            limit = req.get("limit", 50)
+            
+            # Clamp limit to 1..500
+            if not isinstance(limit, int) or limit < 1:
+                limit = 50
+            limit = min(limit, 500)
+            
+            async with aiosqlite.connect(DB_FILE) as db:
+                await db.execute("PRAGMA busy_timeout=3000;")
+                db.row_factory = aiosqlite.Row
+                
+                if station_id:
+                    cursor = await db.execute(
+                        "SELECT station_id, timestamp, temperature, humidity, windspeed FROM readings WHERE station_id = ? ORDER BY id DESC LIMIT ?",
+                        (station_id, limit)
+                    )
+                else:
+                    cursor = await db.execute(
+                        "SELECT station_id, timestamp, temperature, humidity, windspeed FROM readings ORDER BY id DESC LIMIT ?",
+                        (limit,)
+                    )
+                
+                rows = await cursor.fetchall()
+                readings = [dict(row) for row in rows]
+            
+            return {"status": "ok", "readings": readings}
+        
+        else:
+            # Unknown request type
+            request_type_str = str(request_type) if request_type is not None else "null"
+            return {"status": "error", "reason": f"unknown_request:{request_type_str}"}
+    
+    except Exception as e:
+        print(f"Error in consumer request from {addr}: {e}")
+        return {"status": "error", "reason": f"server_error: {str(e)}"}
+
+
 async def handle_client(reader, writer):
     """
     Handle a single client connection.
@@ -235,22 +324,33 @@ async def handle_client(reader, writer):
                 data = line.decode('utf-8').strip()
                 
                 # Parse JSON safely (rejects NaN/Infinity)
-                batch = _safe_json_loads(data)
+                parsed = _safe_json_loads(data)
                 
-                # Validate batch using protocol validation
-                # This raises ValueError on any validation error
-                # (includes timestamp format and numeric finiteness checks)
-                validate_batch(batch)
-                
-                # All-or-nothing: enqueue batch for sequential writing
-                inserted = await enqueue_batch(batch)
-                
-                # Send success response
-                response = {"status": "ok", "inserted": inserted}
-                writer.write((json.dumps(response) + "\n").encode('utf-8'))
-                await writer.drain()
-                
-                print(f"Processed batch from {addr}: {inserted} readings inserted")
+                # Protocol multiplexing: check if this is a consumer request or producer batch
+                if isinstance(parsed, dict) and "request" in parsed:
+                    # Consumer request path
+                    response = await handle_consumer_request(parsed, addr)
+                    writer.write((json.dumps(response) + "\n").encode('utf-8'))
+                    await writer.drain()
+                    print(f"Processed consumer request from {addr}: {parsed.get('request')}")
+                else:
+                    # Producer ingest path (original behavior)
+                    batch = parsed
+                    
+                    # Validate batch using protocol validation
+                    # This raises ValueError on any validation error
+                    # (includes timestamp format and numeric finiteness checks)
+                    validate_batch(batch)
+                    
+                    # All-or-nothing: enqueue batch for sequential writing
+                    inserted = await enqueue_batch(batch)
+                    
+                    # Send success response
+                    response = {"status": "ok", "inserted": inserted}
+                    writer.write((json.dumps(response) + "\n").encode('utf-8'))
+                    await writer.drain()
+                    
+                    print(f"Processed batch from {addr}: {inserted} readings inserted")
                 
             except asyncio.CancelledError:
                 # Client handler was cancelled (connection lost, etc.)
