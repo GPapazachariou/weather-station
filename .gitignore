@@ -1,6 +1,33 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# Environment
 .env
+
+# Data
 data/
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS/System
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docker
+docker-compose.override.yml
 
