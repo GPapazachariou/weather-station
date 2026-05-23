@@ -40,6 +40,7 @@ services:
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=12345
       - DB_PATH=/app/data/weather.db
+      - PYTHONUNBUFFERED=1
     restart: unless-stopped
     networks:
       - weather-network
@@ -65,6 +66,7 @@ services:
       - WEATHER_DB_PATH=/app/data/weather.db
       - WEB_HOST=0.0.0.0
       - WEB_PORT=8000
+      - PYTHONUNBUFFERED=1
     depends_on:
       - server
     restart: unless-stopped

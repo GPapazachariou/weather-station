@@ -55,6 +55,7 @@ def generate_station_yaml(station_id: int) -> str:
       - WEATHER_STATION_BATCH_INTERVAL=1
       - WEATHER_STATION_TIMEOUT=5.0
       - WEATHER_STATION_MAX_RETRIES=3
+      - PYTHONUNBUFFERED=1
     depends_on:
       server:
         condition: service_healthy
@@ -109,6 +110,7 @@ services:
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=12345
       - DB_PATH=/app/data/weather.db
+      - PYTHONUNBUFFERED=1
     restart: unless-stopped
     networks:
       - weather-network
@@ -134,6 +136,7 @@ services:
       - WEATHER_DB_PATH=/app/data/weather.db
       - WEB_HOST=0.0.0.0
       - WEB_PORT=8000
+      - PYTHONUNBUFFERED=1
     depends_on:
       - server
     restart: unless-stopped

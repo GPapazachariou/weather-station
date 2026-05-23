@@ -15,6 +15,7 @@ COPY static/ static/
 ENV WEATHER_DB_PATH=../data/weather.db
 ENV WEB_HOST=0.0.0.0
 ENV WEB_PORT=8000
+ENV PYTHONUNBUFFERED=1
 
 # Expose web port
 EXPOSE 8000

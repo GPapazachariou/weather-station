@@ -1,0 +1,21 @@
+
+
+docker compose up --build -d
+docker compose -f docker-compose.stress.yml up --build -d
+
+docker-compose up
+
+
+#docker compose logs -f server
+#docker compose logs -f station-001
+
+docker compose restart server
+docker compose restart station-001
+
+
+docker compose down -v
+
+python consumer_client\test_consumer.py
+
+
+python station_client\client.py

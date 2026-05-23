@@ -13,6 +13,9 @@ COPY protocol.py .
 # Create data directory for SQLite database
 RUN mkdir -p /app/data
 
+# Enable Python unbuffered mode for real-time logging
+ENV PYTHONUNBUFFERED=1
+
 # Expose TCP port
 EXPOSE 12345
 
