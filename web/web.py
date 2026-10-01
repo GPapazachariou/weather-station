@@ -3,13 +3,14 @@ Weather Station Web UI Dashboard
 Minimal Flask app for visualizing weather data from SQLite database.
 """
 
+import contextlib
+import logging
 import os
 import sqlite3
-import logging
-import contextlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from flask import Flask, render_template, jsonify, request
+
+from flask import Flask, jsonify, render_template, request
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)

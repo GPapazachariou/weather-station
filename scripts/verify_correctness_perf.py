@@ -7,22 +7,21 @@ Tests:
 4. Query latency benchmarks on a 50,000-row dataset.
 """
 
-import sys
-import os
-import time
 import sqlite3
-import tempfile
-from pathlib import Path
+import sys
+import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 # Ensure project modules are on sys.path
 WORKTREE_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(WORKTREE_ROOT / "web"))
 sys.path.insert(0, str(WORKTREE_ROOT / "server"))
 
-import aiosqlite
 import asyncio
+
 import app as server_app
+
 import web as web_module
 
 

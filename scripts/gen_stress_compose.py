@@ -196,10 +196,10 @@ def main():
         f.write(yaml_content)
     
     print(f"✓ Generated: {output_file}")
-    print(f"\nTo run the stress test:")
-    print(f"  docker compose -f docker-compose.stress.yml up --build")
-    print(f"\nTo clean up:")
-    print(f"  docker compose -f docker-compose.stress.yml down -v")
+    print("\nTo run the stress test:")
+    print("  docker compose -f docker-compose.stress.yml up --build")
+    print("\nTo clean up:")
+    print("  docker compose -f docker-compose.stress.yml down -v")
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ async def send_request(request):
         # Read response
         response_line = await reader.readline()
         if not response_line:
-            print(f"  ERROR: No response from server")
+            print("  ERROR: No response from server")
             return None
         
         response = json.loads(response_line.decode('utf-8').strip())
@@ -99,7 +99,7 @@ async def test_consumer_latest():
     if response:
         print(f"  Response: {json.dumps(response, indent=2)}")
         if response.get("status") == "ok" and "reading" in response:
-            print(f"  ✓ Consumer latest request successful")
+            print("  ✓ Consumer latest request successful")
             return True
     
     print("  ✗ Consumer latest request failed")
@@ -116,7 +116,7 @@ async def test_consumer_latest_station():
     if response:
         print(f"  Response: {json.dumps(response, indent=2)}")
         if response.get("status") == "ok" and "reading" in response:
-            print(f"  ✓ Consumer latest station request successful")
+            print("  ✓ Consumer latest station request successful")
             return True
     
     print("  ✗ Consumer latest station request failed")
@@ -185,7 +185,7 @@ async def test_invalid_consumer_request():
     if response:
         print(f"  Response: {json.dumps(response, indent=2)}")
         if response.get("status") == "error" and "unknown_request" in response.get("reason", ""):
-            print(f"  ✓ Unknown request properly rejected")
+            print("  ✓ Unknown request properly rejected")
             return True
     
     print("  ✗ Unknown request handling failed")

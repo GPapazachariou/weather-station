@@ -6,7 +6,6 @@ Defines protocol constants and validation for weather data batches.
 import math
 from datetime import datetime
 
-
 # Protocol limits
 MAX_LINE_SIZE = 65536  # Maximum size of a single line (bytes)
 MAX_BATCH_SIZE = 50    # Maximum number of readings per batch
@@ -34,8 +33,8 @@ def validate_timestamp(timestamp_str: str) -> None:
     
     try:
         datetime.fromisoformat(normalized)
-    except (ValueError, TypeError):
-        raise ValueError(f"invalid_timestamp: {timestamp_str}")
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"invalid_timestamp: {timestamp_str}") from e
 
 
 def validate_finite_number(value, field_name: str) -> None:
@@ -96,20 +95,22 @@ def validate_batch(batch: list) -> None:
             raise ValueError(f"invalid station_id at index {index} (expected string)")
         if not item["station_id"]:
             raise ValueError(f"empty station_id at index {index}")
-        if len(item["station_id"]) > 64 or not all(c.isalnum() or c in "-_" for c in item["station_id"]):
+        if len(item["station_id"]) > 64 or not all(
+            (c.isascii() and c.isalnum()) or c in "-_" for c in item["station_id"]
+        ):
             raise ValueError(f"invalid station_id format at index {index}")
         
         # Rule 6: timestamp must be valid ISO 8601 format
         try:
             validate_timestamp(item["timestamp"])
         except ValueError as e:
-            raise ValueError(f"invalid_timestamp at index {index}: {str(e)}")
+            raise ValueError(f"invalid_timestamp at index {index}: {str(e)}") from e
         
         # Rule 7: temperature must be finite number within range
         try:
             validate_finite_number(item["temperature"], "temperature")
         except ValueError as e:
-            raise ValueError(f"invalid temperature at index {index}: {str(e)}")
+            raise ValueError(f"invalid temperature at index {index}: {str(e)}") from e
         
         if not (TEMPERATURE_MIN <= item["temperature"] <= TEMPERATURE_MAX):
             raise ValueError(
@@ -121,7 +122,7 @@ def validate_batch(batch: list) -> None:
         try:
             validate_finite_number(item["humidity"], "humidity")
         except ValueError as e:
-            raise ValueError(f"invalid humidity at index {index}: {str(e)}")
+            raise ValueError(f"invalid humidity at index {index}: {str(e)}") from e
         
         if not (HUMIDITY_MIN <= item["humidity"] <= HUMIDITY_MAX):
             raise ValueError(
@@ -133,7 +134,7 @@ def validate_batch(batch: list) -> None:
         try:
             validate_finite_number(item["windspeed"], "windspeed")
         except ValueError as e:
-            raise ValueError(f"invalid windspeed at index {index}: {str(e)}")
+            raise ValueError(f"invalid windspeed at index {index}: {str(e)}") from e
         
         if not (WINDSPEED_MIN <= item["windspeed"] <= WINDSPEED_MAX):
             raise ValueError(

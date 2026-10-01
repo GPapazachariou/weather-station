@@ -1,5 +1,10 @@
 # Weather Station Simulator: How to Run & Demo Guide
 
+[![CI Pipeline](https://github.com/GPapazachariou/weather-station/actions/workflows/ci.yml/badge.svg)](https://github.com/GPapazachariou/weather-station/actions/workflows/ci.yml)
+[![Python 3.11 | 3.12 | 3.13](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/)
+[![Testing: pytest](https://img.shields.io/badge/testing-pytest-green.svg)](tests/)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+
 ## 1. Project Overview
 
 The **Weather Station Simulator** is a distributed, real-time data ingestion platform demonstrating socket-based networking, message validation, and persistent storage. Multiple weather station clients continuously send sensor readings (temperature, humidity, windspeed) over TCP to a central server. The server validates JSON batches, persists data in SQLite, and provides a web dashboard for live visualization. Optional consumer clients can query the server for station data using the same TCP protocol.
@@ -301,9 +306,35 @@ Then open http://localhost:8000 in your browser.
 
 ## 7. Testing
 
-### 7.1 Consumer Protocol Tests
+### 7.1 Automated Unit & Integration Tests (pytest)
 
-The `consumer_client/test_consumer.py` script validates the producer batch ingest and consumer request paths.
+The project includes a comprehensive, automated test suite with matrix testing on Python 3.11, 3.12, and 3.13 via GitHub Actions.
+
+**Run tests locally:**
+```bash
+# 1. Install development and runtime dependencies
+pip install -r requirements-dev.txt
+
+# Or install in editable mode with development extras:
+# pip install -e ".[dev]"
+
+# 2. Run full test suite with coverage
+pytest
+
+# 3. Run linter
+ruff check .
+```
+
+**Test suite contents (`/tests`):**
+- **`test_protocol.py`**: 119 unit tests verifying measurement boundaries, NaN/Inf rejection, strict bool rejection, station_id sanitization (including non-ASCII rejection), ISO-8601 parsing, and all-or-nothing transactional batch rules (**100% coverage**).
+- **`test_web.py`**: 36 API tests covering Flask routes, input validation (400 responses), regression safeguards for "Last N" chronological ordering, UTC cutoff windowing, and dynamic wind column detection (**99% coverage**).
+- **`test_server.py`**: 25 async tests verifying single-writer queue concurrency without SQLite lock contention, consumer protocol handlers (`stations`, `latest`, `recent`), and end-to-end TCP loopback communication.
+- **`test_client.py`**: 17 tests verifying sensor math, FIFO buffering, drop-oldest overflow logic, and jittered exponential backoff (**42% coverage**).
+- **`test_smoke.py`**: Verifies packaging discovery and module imports across components.
+
+### 7.2 Consumer Protocol Tests (Live Integration)
+
+The `consumer_client/test_consumer.py` script validates the producer batch ingest and consumer request paths against a live server.
 
 **Run tests (server must be running):**
 ```bash
@@ -324,7 +355,7 @@ python consumer_client/test_consumer.py
 
 **Success:** All 8 tests pass (✓ checkmarks in output).
 
-### 7.2 API Sanity Check
+### 7.3 API Sanity Check
 
 **Test API endpoints directly (via curl or browser):**
 
@@ -342,7 +373,7 @@ curl "http://localhost:8000/api/stats?station_id=STATION-001&metric=temperature&
 # {"latest": 22.5, "latest_t": "2025-01-17T14:30:45Z", "avg": 22.1, "min": 20.0, "max": 25.5}
 ```
 
-### 7.3 Common Failure Checklist
+### 7.4 Common Failure Checklist
 
 | Issue | Cause | Solution |
 |-------|-------|----------|
