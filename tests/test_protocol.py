@@ -269,6 +269,8 @@ class TestStationIdValidation:
             "STN\n001",
             "STN\t001",
             "stn.001",
+            "STN-αβγ",  # Non-ASCII Unicode characters
+            "STATION_©",
         ],
     )
     def test_station_id_invalid_characters_rejected(self, malicious_id):

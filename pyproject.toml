@@ -26,6 +26,7 @@ testpaths = ["tests"]
 norecursedirs = ["consumer_client", "scripts", ".venv", "docs"]
 pythonpath = ["server", "web", "station_client"]
 asyncio_mode = "auto"
+addopts = "--cov=protocol --cov=web --cov=app --cov=client --cov-report=term-missing"
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
@@ -56,7 +57,7 @@ exclude = [
 ]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]
+select = ["E", "F", "W", "I", "B"]
 ignore = [
     "E501",  # line-length
     "W291",  # trailing whitespace

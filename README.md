@@ -312,8 +312,11 @@ The project includes a comprehensive, automated test suite with matrix testing o
 
 **Run tests locally:**
 ```bash
-# 1. Install development dependencies
+# 1. Install development and runtime dependencies
 pip install -r requirements-dev.txt
+
+# Or install in editable mode with development extras:
+# pip install -e ".[dev]"
 
 # 2. Run full test suite with coverage
 pytest
@@ -323,10 +326,10 @@ ruff check .
 ```
 
 **Test suite contents (`/tests`):**
-- **`test_protocol.py`**: 117 unit tests verifying measurement boundaries, NaN/Inf rejection, strict bool rejection, station_id sanitization, ISO-8601 parsing, and all-or-nothing transactional batch rules (**100% coverage**).
-- **`test_web.py`**: 36 API tests covering Flask routes, input validation (400 responses), regression safeguards for "Last N" chronological ordering, UTC cutoff windowing, and dynamic wind column detection.
+- **`test_protocol.py`**: 119 unit tests verifying measurement boundaries, NaN/Inf rejection, strict bool rejection, station_id sanitization (including non-ASCII rejection), ISO-8601 parsing, and all-or-nothing transactional batch rules (**100% coverage**).
+- **`test_web.py`**: 36 API tests covering Flask routes, input validation (400 responses), regression safeguards for "Last N" chronological ordering, UTC cutoff windowing, and dynamic wind column detection (**99% coverage**).
 - **`test_server.py`**: 25 async tests verifying single-writer queue concurrency without SQLite lock contention, consumer protocol handlers (`stations`, `latest`, `recent`), and end-to-end TCP loopback communication.
-- **`test_client.py`**: 17 tests verifying sensor math, FIFO buffering, drop-oldest overflow logic, and jittered exponential backoff.
+- **`test_client.py`**: 17 tests verifying sensor math, FIFO buffering, drop-oldest overflow logic, and jittered exponential backoff (**42% coverage**).
 - **`test_smoke.py`**: Verifies packaging discovery and module imports across components.
 
 ### 7.2 Consumer Protocol Tests (Live Integration)

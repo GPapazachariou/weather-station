@@ -244,6 +244,30 @@ def generate_batch(station_id, size):
     return [generate_reading(station_id) for _ in range(size)]
 
 
+def buffer_batch(buffer: deque, batch: list, max_capacity: int):
+    """
+    Append a batch to the buffer with drop-oldest overflow policy.
+    
+    If len(buffer) >= max_capacity, drops the oldest batch (popleft)
+    and returns it. Otherwise returns None.
+    """
+    dropped = None
+    if len(buffer) >= max_capacity:
+        dropped = buffer.popleft()
+    buffer.append(batch)
+    return dropped
+
+
+def calculate_backoff(current_backoff: float, max_backoff: float) -> float:
+    """Calculate doubled exponential backoff capped at max_backoff."""
+    return min(current_backoff * 2, max_backoff)
+
+
+def calculate_jitter(backoff_jitter: float) -> float:
+    """Generate non-negative random jitter within [0, backoff_jitter]."""
+    return random.uniform(0, backoff_jitter)
+
+
 async def send_batches(config):
     """
     Resilient client with infinite reconnection loop, exponential backoff,
@@ -381,14 +405,11 @@ async def send_batches(config):
                     print(f"[{station_id}] ✗ Connection error during send: {type(e).__name__}: {e}")
                     
                     # Buffer the failed batch
-                    if len(buffer) < max_buffer_records:
-                        buffer.append(batch)
-                        print(f"[{station_id}] → Buffered batch (buffer size: {len(buffer)})")
-                    else:
-                        # Drop oldest batch to prevent unbounded memory growth
-                        dropped = buffer.popleft()
-                        buffer.append(batch)
+                    dropped = buffer_batch(buffer, batch, max_buffer_records)
+                    if dropped is not None:
                         print(f"[{station_id}] ⚠ Buffer full! Dropped oldest batch ({len(dropped)} readings), buffer size: {len(buffer)}")
+                    else:
+                        print(f"[{station_id}] → Buffered batch (buffer size: {len(buffer)})")
                     
                     # Break inner loop to reconnect
                     raise
@@ -399,7 +420,7 @@ async def send_batches(config):
                 print(f"[{station_id}] ✗ Connection failed: {type(e).__name__}: {e}")
                 
                 # Calculate backoff with jitter
-                jitter = random.uniform(0, backoff_jitter)
+                jitter = calculate_jitter(backoff_jitter)
                 wait_time = current_backoff + jitter
                 
                 print(f"[{station_id}] → Retrying in {wait_time:.1f}s (backoff: {current_backoff:.1f}s + jitter: {jitter:.1f}s)")
@@ -419,16 +440,14 @@ async def send_batches(config):
                         batch_size = random.randint(batch_size_min, batch_size_max)
                         batch = generate_batch(station_id, batch_size)
                         
-                        if len(buffer) < max_buffer_records:
-                            buffer.append(batch)
-                            print(f"[{station_id}] → Generated & buffered batch (buffer: {len(buffer)} batches)")
-                        else:
-                            dropped = buffer.popleft()
-                            buffer.append(batch)
+                        dropped = buffer_batch(buffer, batch, max_buffer_records)
+                        if dropped is not None:
                             print(f"[{station_id}] ⚠ Buffer full! Dropped oldest, buffered new (buffer: {len(buffer)} batches)")
+                        else:
+                            print(f"[{station_id}] → Generated & buffered batch (buffer: {len(buffer)} batches)")
                 
                 # Exponential backoff - double the backoff time
-                current_backoff = min(current_backoff * 2, max_backoff)
+                current_backoff = calculate_backoff(current_backoff, max_backoff)
         
         finally:
             # Clean up connection

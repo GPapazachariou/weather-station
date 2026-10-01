@@ -134,12 +134,13 @@ class TestWriterQueue:
             },
         ]
 
-        inserted = await app.enqueue_batch(batch)
-        assert inserted == 2
-
-        # Terminate writer gracefully via sentinel
-        await app.write_queue.put(app._WRITER_SENTINEL)
-        await writer
+        try:
+            inserted = await app.enqueue_batch(batch)
+            assert inserted == 2
+        finally:
+            # Terminate writer gracefully via sentinel
+            await app.write_queue.put(app._WRITER_SENTINEL)
+            await writer
 
         # Verify records exist in DB
         async with aiosqlite.connect(str(server_test_db)) as db:
@@ -168,13 +169,14 @@ class TestWriterQueue:
             for i in range(10)
         ]
 
-        # Enqueue 10 batches concurrently
-        results = await asyncio.gather(*[app.enqueue_batch(b) for b in batches])
-        assert results == [5] * 10
-
-        # Terminate writer gracefully
-        await app.write_queue.put(app._WRITER_SENTINEL)
-        await writer
+        try:
+            # Enqueue 10 batches concurrently
+            results = await asyncio.gather(*[app.enqueue_batch(b) for b in batches])
+            assert results == [5] * 10
+        finally:
+            # Terminate writer gracefully
+            await app.write_queue.put(app._WRITER_SENTINEL)
+            await writer
 
         # Verify total record count
         async with aiosqlite.connect(str(server_test_db)) as db:
@@ -310,55 +312,57 @@ class TestServerTcpEndToEnd:
 
         reader, socket_writer = await asyncio.open_connection("127.0.0.1", port)
 
-        # 1. Ingest batch via TCP
-        batch = [
-            {
-                "station_id": "TCP-STN",
-                "timestamp": "2026-10-02T01:30:00Z",
-                "temperature": 21.0,
-                "humidity": 45.0,
-                "windspeed": 8.0,
-            }
-        ]
-        socket_writer.write((json.dumps(batch) + "\n").encode())
-        await socket_writer.drain()
+        try:
+            # 1. Ingest batch via TCP
+            batch = [
+                {
+                    "station_id": "TCP-STN",
+                    "timestamp": "2026-10-02T01:30:00Z",
+                    "temperature": 21.0,
+                    "humidity": 45.0,
+                    "windspeed": 8.0,
+                }
+            ]
+            socket_writer.write((json.dumps(batch) + "\n").encode())
+            await socket_writer.drain()
 
-        resp_line = await reader.readline()
-        resp = json.loads(resp_line.decode())
-        assert resp == {"status": "ok", "inserted": 1}
+            resp_line = await reader.readline()
+            resp = json.loads(resp_line.decode())
+            assert resp == {"status": "ok", "inserted": 1}
 
-        # 2. Query consumer stations via TCP
-        socket_writer.write((json.dumps({"request": "stations"}) + "\n").encode())
-        await socket_writer.drain()
+            # 2. Query consumer stations via TCP
+            socket_writer.write((json.dumps({"request": "stations"}) + "\n").encode())
+            await socket_writer.drain()
 
-        resp_line = await reader.readline()
-        resp = json.loads(resp_line.decode())
-        assert resp["status"] == "ok"
-        assert "TCP-STN" in resp["stations"]
+            resp_line = await reader.readline()
+            resp = json.loads(resp_line.decode())
+            assert resp["status"] == "ok"
+            assert "TCP-STN" in resp["stations"]
 
-        # 3. Invalid JSON error response
-        socket_writer.write(b"this is not json\n")
-        await socket_writer.drain()
+            # 3. Invalid JSON error response
+            socket_writer.write(b"this is not json\n")
+            await socket_writer.drain()
 
-        resp_line = await reader.readline()
-        resp = json.loads(resp_line.decode())
-        assert resp["status"] == "error"
-        assert "invalid_json" in resp["reason"]
+            resp_line = await reader.readline()
+            resp = json.loads(resp_line.decode())
+            assert resp["status"] == "error"
+            assert "invalid_json" in resp["reason"]
 
-        # 4. Validation error response
-        socket_writer.write((json.dumps([{"station_id": ""}]) + "\n").encode())
-        await socket_writer.drain()
+            # 4. Validation error response
+            socket_writer.write((json.dumps([{"station_id": ""}]) + "\n").encode())
+            await socket_writer.drain()
 
-        resp_line = await reader.readline()
-        resp = json.loads(resp_line.decode())
-        assert resp["status"] == "error"
+            resp_line = await reader.readline()
+            resp = json.loads(resp_line.decode())
+            assert resp["status"] == "error"
 
-        # Cleanup
-        socket_writer.close()
-        await socket_writer.wait_closed()
+        finally:
+            # Cleanup socket, server, and background writer task
+            socket_writer.close()
+            await socket_writer.wait_closed()
 
-        tcp_server.close()
-        await tcp_server.wait_closed()
+            tcp_server.close()
+            await tcp_server.wait_closed()
 
-        await app.write_queue.put(app._WRITER_SENTINEL)
-        await writer
+            await app.write_queue.put(app._WRITER_SENTINEL)
+            await writer

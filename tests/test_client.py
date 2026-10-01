@@ -92,7 +92,7 @@ class TestSensorGeneration:
 
 
 class TestBufferSemantics:
-    """Tests simulating client.py buffer overflow and FIFO behavior."""
+    """Tests for client.buffer_batch() overflow and FIFO behavior."""
 
     def test_buffer_fifo_order(self):
         """Buffer deque should preserve FIFO order during normal enqueue/dequeue."""
@@ -100,16 +100,18 @@ class TestBufferSemantics:
         batch_1 = client.generate_batch("STATION-001", 1)
         batch_2 = client.generate_batch("STATION-001", 1)
 
-        buf.append(batch_1)
-        buf.append(batch_2)
+        dropped1 = client.buffer_batch(buf, batch_1, max_capacity=5)
+        dropped2 = client.buffer_batch(buf, batch_2, max_capacity=5)
 
+        assert dropped1 is None
+        assert dropped2 is None
         assert buf.popleft() == batch_1
         assert buf.popleft() == batch_2
         assert len(buf) == 0
 
     def test_buffer_drop_oldest_on_capacity(self):
         """
-        When buffer reaches max_buffer_records, appending a new batch
+        When buffer reaches max_capacity, appending a new batch
         must drop the oldest batch (popleft) to keep memory bounded.
         """
         max_capacity = 3
@@ -118,18 +120,22 @@ class TestBufferSemantics:
         # Enqueue batches 0, 1, 2 (fills buffer to capacity)
         batches = [client.generate_batch("STATION-001", 1) for _ in range(5)]
         for b in batches[:max_capacity]:
-            buf.append(b)
+            dropped = client.buffer_batch(buf, b, max_capacity)
+            assert dropped is None
 
         assert len(buf) == max_capacity
 
-        # Enqueue batch 3 with drop-oldest logic from client.py:423-430
-        for b in batches[max_capacity:]:
-            if len(buf) >= max_capacity:
-                buf.popleft()
-            buf.append(b)
-
+        # Enqueue batch 3 with drop-oldest logic
+        dropped_3 = client.buffer_batch(buf, batches[3], max_capacity)
+        assert dropped_3 == batches[0]
         assert len(buf) == max_capacity
-        # Oldest batches (0 and 1) were dropped; remaining must be 2, 3, 4
+
+        # Enqueue batch 4 with drop-oldest logic
+        dropped_4 = client.buffer_batch(buf, batches[4], max_capacity)
+        assert dropped_4 == batches[1]
+        assert len(buf) == max_capacity
+
+        # Remaining in buffer must be batches 2, 3, 4
         assert buf.popleft() == batches[2]
         assert buf.popleft() == batches[3]
         assert buf.popleft() == batches[4]
@@ -144,7 +150,7 @@ class TestBackoffCalculation:
     """Tests for exponential backoff doubling, max ceiling, and jitter."""
 
     def test_exponential_backoff_progression(self):
-        """Backoff should double up to max_backoff."""
+        """Backoff should double up to max_backoff using client.calculate_backoff."""
         base_backoff = 1.0
         max_backoff = 16.0
         current_backoff = base_backoff
@@ -153,18 +159,16 @@ class TestBackoffCalculation:
         actual_sequence = [current_backoff]
 
         for _ in range(len(expected_sequence) - 1):
-            current_backoff = min(current_backoff * 2, max_backoff)
+            current_backoff = client.calculate_backoff(current_backoff, max_backoff)
             actual_sequence.append(current_backoff)
 
         assert actual_sequence == expected_sequence
 
     def test_jitter_is_non_negative_and_bounded(self):
-        """Jitter should add a random float in [0, backoff_jitter]."""
-        import random
-
+        """client.calculate_jitter should return a random float in [0, backoff_jitter]."""
         backoff_jitter = 1.0
         for _ in range(50):
-            jitter = random.uniform(0, backoff_jitter)
+            jitter = client.calculate_jitter(backoff_jitter)
             assert 0.0 <= jitter <= backoff_jitter
 
 
