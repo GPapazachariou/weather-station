@@ -4,16 +4,15 @@ Generates fake weather data and sends it to the server.
 Resilient with automatic reconnection, exponential backoff, and buffering.
 """
 
-import asyncio
-import json
-import random
-import os
 import argparse
+import asyncio
 import hashlib
+import json
+import os
+import random
 import signal
 from collections import deque
 from datetime import datetime, timezone
-
 
 # Default configuration values
 DEFAULT_SERVER_HOST = "localhost"

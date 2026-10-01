@@ -6,7 +6,6 @@ Defines protocol constants and validation for weather data batches.
 import math
 from datetime import datetime
 
-
 # Protocol limits
 MAX_LINE_SIZE = 65536  # Maximum size of a single line (bytes)
 MAX_BATCH_SIZE = 50    # Maximum number of readings per batch

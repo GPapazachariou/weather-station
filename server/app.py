@@ -5,12 +5,12 @@ Receives weather data from clients via TCP socket and stores in SQLite.
 
 import asyncio
 import json
-import aiosqlite
-import signal
 import os
+import signal
 from pathlib import Path
-from protocol import validate_batch, MAX_LINE_SIZE
 
+import aiosqlite
+from protocol import MAX_LINE_SIZE, validate_batch
 
 # Database configuration - use environment variable with absolute path fallback
 DB_FILE = os.getenv("DB_PATH", "/app/data/weather.db")
