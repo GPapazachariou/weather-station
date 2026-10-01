@@ -6,7 +6,8 @@ Minimal Flask app for visualizing weather data from SQLite database.
 import os
 import sqlite3
 import logging
-from datetime import datetime, timedelta
+import contextlib
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from flask import Flask, render_template, jsonify, request
 
@@ -48,10 +49,9 @@ def detect_wind_column():
         return _wind_column_cache
     
     try:
-        conn = get_db()
-        cursor = conn.execute("PRAGMA table_info(readings)")
-        columns = [row[1] for row in cursor.fetchall()]
-        conn.close()
+        with contextlib.closing(get_db()) as conn:
+            cursor = conn.execute("PRAGMA table_info(readings)")
+            columns = [row[1] for row in cursor.fetchall()]
         
         if "windspeed" in columns:
             _wind_column_cache = "windspeed"
@@ -83,14 +83,18 @@ def get_db():
 
 
 def parse_timestamp(ts):
-    """Parse ISO 8601 timestamp to datetime (returns naive datetime)."""
+    """Parse ISO 8601 timestamp to timezone-aware UTC datetime."""
+    if not ts:
+        return None
     try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        # Strip timezone info to avoid comparison issues
-        return dt.replace(tzinfo=None)
-    except (ValueError, AttributeError):
+        normalized = ts[:-1] + "+00:00" if ts.endswith("Z") else ts
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except (ValueError, TypeError):
         try:
-            return datetime.fromtimestamp(float(ts))
+            return datetime.fromtimestamp(float(ts), tz=timezone.utc)
         except (ValueError, TypeError):
             return None
 
@@ -105,12 +109,11 @@ def index():
 def api_stations():
     """Get list of unique station IDs."""
     try:
-        conn = get_db()
-        cursor = conn.execute(
-            "SELECT DISTINCT station_id FROM readings ORDER BY station_id"
-        )
-        stations = [row[0] for row in cursor.fetchall()]
-        conn.close()
+        with contextlib.closing(get_db()) as conn:
+            cursor = conn.execute(
+                "SELECT DISTINCT station_id FROM readings ORDER BY station_id"
+            )
+            stations = [row[0] for row in cursor.fetchall()]
         logger.info(f"Fetched {len(stations)} stations")
         return jsonify({"stations": stations})
     except Exception as e:
@@ -169,49 +172,56 @@ def api_stats():
             400,
         )
 
-    # Calculate time window (if time-based)
-    cutoff = datetime.now() - VALID_RANGES[time_range] if not use_limit else None
+    # Whitelist safety check for dynamic metric column
+    db_metric = normalize_metric(metric)
+    if db_metric not in {"temperature", "humidity", "windspeed", "wind_speed"}:
+        return (
+            jsonify(
+                {
+                    "error": "Invalid metric",
+                    "latest": None,
+                    "latest_t": None,
+                    "avg": None,
+                    "min": None,
+                    "max": None,
+                }
+            ),
+            400,
+        )
+
+    # Calculate UTC time window (if time-based)
+    cutoff_dt = datetime.now(timezone.utc) - VALID_RANGES[time_range] if not use_limit else None
+    cutoff_iso = cutoff_dt.isoformat() if cutoff_dt else None
 
     try:
-        conn = get_db()
-        
-        # Normalize metric name to match DB column
-        db_metric = normalize_metric(metric)
-        
-        cursor = conn.execute(
-            f"""
-            SELECT timestamp, {db_metric}
-            FROM readings
-            WHERE station_id = ?
-            ORDER BY timestamp DESC
-            """,
-            (station_id,),
-        )
-        rows = cursor.fetchall()
-        conn.close()
+        with contextlib.closing(get_db()) as conn:
+            if use_limit:
+                max_records = VALID_LIMITS[limit]
+                cursor = conn.execute(
+                    f"""
+                    SELECT timestamp, {db_metric}
+                    FROM readings
+                    WHERE station_id = ? AND {db_metric} IS NOT NULL
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                    """,
+                    (station_id, max_records),
+                )
+            else:
+                cursor = conn.execute(
+                    f"""
+                    SELECT timestamp, {db_metric}
+                    FROM readings
+                    WHERE station_id = ? AND timestamp >= ? AND {db_metric} IS NOT NULL
+                    ORDER BY timestamp DESC
+                    """,
+                    (station_id, cutoff_iso),
+                )
+            rows = cursor.fetchall()
 
-        # Filter by time range or limit, and ignore nulls
-        values = []
-        latest = None
-        latest_t = None
-        count = 0
-        max_records = VALID_LIMITS[limit] if use_limit else float('inf')
-
-        for row in rows:
-            if use_limit and count >= max_records:
-                break
-            
-            dt = parse_timestamp(row["timestamp"])
-            if not use_limit and (not dt or dt < cutoff):
-                continue
-            
-            val = row[db_metric]
-            if val is not None:
-                values.append(val)
-                if latest is None:
-                    latest = val
-                    latest_t = row["timestamp"]
-                count += 1
+        values = [row[db_metric] for row in rows]
+        latest = values[0] if values else None
+        latest_t = rows[0]["timestamp"] if rows else None
 
         # Calculate stats
         if values:
@@ -276,44 +286,44 @@ def api_readings():
     if not use_limit and time_range not in VALID_RANGES:
         return jsonify({"error": "Invalid range or limit", "points": []}), 400
 
-    # Calculate time window (if time-based)
-    cutoff = datetime.now() - VALID_RANGES[time_range] if not use_limit else None
+    # Whitelist safety check for dynamic metric column
+    db_metric = normalize_metric(metric)
+    if db_metric not in {"temperature", "humidity", "windspeed", "wind_speed"}:
+        return jsonify({"error": "Invalid metric", "points": []}), 400
+
+    # Calculate UTC time window (if time-based)
+    cutoff_dt = datetime.now(timezone.utc) - VALID_RANGES[time_range] if not use_limit else None
+    cutoff_iso = cutoff_dt.isoformat() if cutoff_dt else None
 
     try:
-        conn = get_db()
-        
-        # Normalize metric name to match DB column
-        db_metric = normalize_metric(metric)
-        
-        cursor = conn.execute(
-            f"""
-            SELECT timestamp, {db_metric}
-            FROM readings
-            WHERE station_id = ?
-            ORDER BY timestamp ASC
-            """,
-            (station_id,),
-        )
-        rows = cursor.fetchall()
-        conn.close()
-
-        # Filter by time range or limit, and ignore nulls, order oldest -> newest
-        points = []
-        count = 0
-        max_records = VALID_LIMITS[limit] if use_limit else float('inf')
-        
-        for row in rows:
-            if use_limit and count >= max_records:
-                break
-            
-            dt = parse_timestamp(row["timestamp"])
-            if not use_limit and (not dt or dt < cutoff):
-                continue
-            
-            val = row[db_metric]
-            if val is not None:
-                points.append({"t": row["timestamp"], "v": val})
-                count += 1
+        with contextlib.closing(get_db()) as conn:
+            if use_limit:
+                max_records = VALID_LIMITS[limit]
+                cursor = conn.execute(
+                    f"""
+                    SELECT timestamp, {db_metric}
+                    FROM readings
+                    WHERE station_id = ? AND {db_metric} IS NOT NULL
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                    """,
+                    (station_id, max_records),
+                )
+                rows = cursor.fetchall()
+                # Reverse newest N rows so Chart.js receives chronological order (oldest -> newest)
+                points = [{"t": row["timestamp"], "v": row[db_metric]} for row in reversed(rows)]
+            else:
+                cursor = conn.execute(
+                    f"""
+                    SELECT timestamp, {db_metric}
+                    FROM readings
+                    WHERE station_id = ? AND timestamp >= ? AND {db_metric} IS NOT NULL
+                    ORDER BY timestamp ASC
+                    """,
+                    (station_id, cutoff_iso),
+                )
+                rows = cursor.fetchall()
+                points = [{"t": row["timestamp"], "v": row[db_metric]} for row in rows]
 
         range_label = f"limit={limit}" if use_limit else f"range={time_range}"
         logger.info(

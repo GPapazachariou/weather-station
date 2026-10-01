@@ -16,8 +16,8 @@ from protocol import validate_batch, MAX_LINE_SIZE
 DB_FILE = os.getenv("DB_PATH", "/app/data/weather.db")
 
 # Server configuration
-HOST = "0.0.0.0"
-PORT = 12345
+HOST = os.getenv("SERVER_HOST", "0.0.0.0")
+PORT = int(os.getenv("SERVER_PORT", "12345"))
 
 # Global state
 write_queue = None
@@ -42,7 +42,7 @@ def _safe_json_loads(data: str):
 
 
 async def init_database():
-    """Initialize SQLite database and create table if it doesn't exist."""
+    """Initialize SQLite database and create table and indexes if they don't exist."""
     # Ensure directory exists
     db_path = Path(DB_FILE)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,8 +58,18 @@ async def init_database():
                 windspeed REAL
             )
         """)
+        # Compound index for time-series filtering and ordering (station_id + timestamp DESC)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_readings_station_ts
+            ON readings(station_id, timestamp DESC)
+        """)
+        # Compound index for consumer latest/recent queries (station_id + id DESC)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_readings_station_id_desc
+            ON readings(station_id, id DESC)
+        """)
         await db.commit()
-        print(f"Database initialized: {DB_FILE}")
+        print(f"Database initialized with indexes: {DB_FILE}")
 
 
 async def db_writer_task():
