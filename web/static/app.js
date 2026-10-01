@@ -38,10 +38,8 @@ async function loadStations() {
             return;
         }
         
-        // Populate dropdown
-        select.innerHTML = stations
-            .map(s => `<option value="${s}">${s}</option>`)
-            .join('');
+        // Populate dropdown safely using DOM API (prevents stored XSS)
+        select.replaceChildren(...stations.map(s => new Option(s, s)));
         
         // Select first station by default
         select.value = stations[0];

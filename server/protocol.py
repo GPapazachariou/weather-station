@@ -91,11 +91,13 @@ def validate_batch(batch: list) -> None:
             if field not in item:
                 raise ValueError(f"missing {field} at index {index}")
         
-        # Rule 5: station_id must be non-empty string
+        # Rule 5: station_id must be non-empty string with valid format
         if not isinstance(item["station_id"], str):
             raise ValueError(f"invalid station_id at index {index} (expected string)")
         if not item["station_id"]:
             raise ValueError(f"empty station_id at index {index}")
+        if len(item["station_id"]) > 64 or not all(c.isalnum() or c in "-_" for c in item["station_id"]):
+            raise ValueError(f"invalid station_id format at index {index}")
         
         # Rule 6: timestamp must be valid ISO 8601 format
         try:
