@@ -73,6 +73,11 @@
                     <span class="quick-label">Wind</span>
                     <strong class="quick-val" id="hero-quick-wind">--</strong>
                 </div>
+                <div class="quick-reading quick-dew" title="Latest Dew Point (Calculated)">
+                    <span class="quick-icon" aria-hidden="true">🌫️</span>
+                    <span class="quick-label">Dew Pt (Calc)</span>
+                    <strong class="quick-val" id="hero-quick-dew">--</strong>
+                </div>
             </div>
         </section>
 
@@ -104,6 +109,7 @@
                             <option value="temperature">Temperature (°C)</option>
                             <option value="humidity">Humidity (%)</option>
                             <option value="windspeed">Wind Speed (m/s)</option>
+                            <option value="dew_point">Dew Point (°C, Calculated)</option>
                         </select>
                     </div>
                 </div>
@@ -221,7 +227,7 @@
         <section id="stats-container" class="stats-grid" style="display: none;" aria-label="Metric statistics">
             <div class="stat-card">
                 <div class="stat-header">
-                    <span class="stat-icon" aria-hidden="true">📌</span>
+                    <span class="stat-icon" aria-hidden="true">📍</span>
                     <span class="stat-label">Latest Reading</span>
                 </div>
                 <div class="stat-value" id="stat-latest">--</div>
@@ -230,10 +236,18 @@
             <div class="stat-card">
                 <div class="stat-header">
                     <span class="stat-icon" aria-hidden="true">📊</span>
-                    <span class="stat-label">Period Average</span>
+                    <span class="stat-label">Sample Average</span>
                 </div>
                 <div class="stat-value" id="stat-avg">--</div>
-                <div class="stat-footnote">Calculated over window</div>
+                <div class="stat-footnote">Arithmetic mean of samples</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-header">
+                    <span class="stat-icon" aria-hidden="true">⏱️</span>
+                    <span class="stat-label">Time-Weighted Avg</span>
+                </div>
+                <div class="stat-value" id="stat-twa">--</div>
+                <div class="stat-footnote">Trapezoidal time-integral</div>
             </div>
             <div class="stat-card">
                 <div class="stat-header">
@@ -251,6 +265,30 @@
                 <div class="stat-value" id="stat-max">--</div>
                 <div class="stat-footnote">Highest recorded value</div>
             </div>
+            <div class="stat-card">
+                <div class="stat-header">
+                    <span class="stat-icon" aria-hidden="true">🔢</span>
+                    <span class="stat-label">Sample Count</span>
+                </div>
+                <div class="stat-value" id="stat-count">--</div>
+                <div class="stat-footnote">Valid readings in window</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-header">
+                    <span class="stat-icon" aria-hidden="true">⏳</span>
+                    <span class="stat-label">Reading Age</span>
+                </div>
+                <div class="stat-value" id="stat-age">--</div>
+                <div class="stat-footnote">Time elapsed since reading</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-header">
+                    <span class="stat-icon" aria-hidden="true">🔄</span>
+                    <span class="stat-label">Period Change</span>
+                </div>
+                <div class="stat-value" id="stat-change">--</div>
+                <div class="stat-footnote" id="stat-change-footnote">vs preceding equal period</div>
+            </div>
         </section>
 
         <!-- Multi-metric Overview Cards (for All Panels view) -->
@@ -264,16 +302,24 @@
                 <div class="stat-value" id="stat-temp-latest">--</div>
                 <div class="stat-subvalues">
                     <div class="subvalue-col">
-                        <span class="subvalue-label">Avg</span>
+                        <span class="subvalue-label">Sample Avg</span>
                         <strong class="subvalue-number" id="stat-temp-avg">--</strong>
                     </div>
                     <div class="subvalue-col">
-                        <span class="subvalue-label">Min</span>
-                        <strong class="subvalue-number" id="stat-temp-min">--</strong>
+                        <span class="subvalue-label">Time-Weighted</span>
+                        <strong class="subvalue-number" id="stat-temp-twa">--</strong>
                     </div>
                     <div class="subvalue-col">
-                        <span class="subvalue-label">Max</span>
-                        <strong class="subvalue-number" id="stat-temp-max">--</strong>
+                        <span class="subvalue-label">Min / Max</span>
+                        <strong class="subvalue-number"><span id="stat-temp-min">--</span> / <span id="stat-temp-max">--</span></strong>
+                    </div>
+                    <div class="subvalue-col">
+                        <span class="subvalue-label">Samples / Age</span>
+                        <strong class="subvalue-number"><span id="stat-temp-count">--</span> (<span id="stat-temp-age">--</span>)</strong>
+                    </div>
+                    <div class="subvalue-col subvalue-full">
+                        <span class="subvalue-label">Change vs Prev Period</span>
+                        <strong class="subvalue-number" id="stat-temp-change">--</strong>
                     </div>
                 </div>
             </div>
@@ -286,16 +332,24 @@
                 <div class="stat-value" id="stat-hum-latest">--</div>
                 <div class="stat-subvalues">
                     <div class="subvalue-col">
-                        <span class="subvalue-label">Avg</span>
+                        <span class="subvalue-label">Sample Avg</span>
                         <strong class="subvalue-number" id="stat-hum-avg">--</strong>
                     </div>
                     <div class="subvalue-col">
-                        <span class="subvalue-label">Min</span>
-                        <strong class="subvalue-number" id="stat-hum-min">--</strong>
+                        <span class="subvalue-label">Time-Weighted</span>
+                        <strong class="subvalue-number" id="stat-hum-twa">--</strong>
                     </div>
                     <div class="subvalue-col">
-                        <span class="subvalue-label">Max</span>
-                        <strong class="subvalue-number" id="stat-hum-max">--</strong>
+                        <span class="subvalue-label">Min / Max</span>
+                        <strong class="subvalue-number"><span id="stat-hum-min">--</span> / <span id="stat-hum-max">--</span></strong>
+                    </div>
+                    <div class="subvalue-col">
+                        <span class="subvalue-label">Samples / Age</span>
+                        <strong class="subvalue-number"><span id="stat-hum-count">--</span> (<span id="stat-hum-age">--</span>)</strong>
+                    </div>
+                    <div class="subvalue-col subvalue-full">
+                        <span class="subvalue-label">Change vs Prev Period</span>
+                        <strong class="subvalue-number" id="stat-hum-change">--</strong>
                     </div>
                 </div>
             </div>
@@ -308,16 +362,55 @@
                 <div class="stat-value" id="stat-wind-latest">--</div>
                 <div class="stat-subvalues">
                     <div class="subvalue-col">
-                        <span class="subvalue-label">Avg</span>
+                        <span class="subvalue-label">Sample Avg</span>
                         <strong class="subvalue-number" id="stat-wind-avg">--</strong>
                     </div>
                     <div class="subvalue-col">
-                        <span class="subvalue-label">Min</span>
-                        <strong class="subvalue-number" id="stat-wind-min">--</strong>
+                        <span class="subvalue-label">Time-Weighted</span>
+                        <strong class="subvalue-number" id="stat-wind-twa">--</strong>
                     </div>
                     <div class="subvalue-col">
-                        <span class="subvalue-label">Max</span>
-                        <strong class="subvalue-number" id="stat-wind-max">--</strong>
+                        <span class="subvalue-label">Min / Max</span>
+                        <strong class="subvalue-number"><span id="stat-wind-min">--</span> / <span id="stat-wind-max">--</span></strong>
+                    </div>
+                    <div class="subvalue-col">
+                        <span class="subvalue-label">Samples / Age</span>
+                        <strong class="subvalue-number"><span id="stat-wind-count">--</span> (<span id="stat-wind-age">--</span>)</strong>
+                    </div>
+                    <div class="subvalue-col subvalue-full">
+                        <span class="subvalue-label">Change vs Prev Period</span>
+                        <strong class="subvalue-number" id="stat-wind-change">--</strong>
+                    </div>
+                </div>
+            </div>
+            <div class="stat-card dew-card">
+                <div class="stat-header">
+                    <span class="stat-icon" aria-hidden="true">🌫️</span>
+                    <span class="stat-label">Dew Point</span>
+                    <span class="stat-unit-tag">°C</span>
+                    <span class="stat-calc-badge" title="Derived using Magnus-Tetens formula from paired temperature and humidity">Calculated</span>
+                </div>
+                <div class="stat-value" id="stat-dew-latest">--</div>
+                <div class="stat-subvalues">
+                    <div class="subvalue-col">
+                        <span class="subvalue-label">Sample Avg</span>
+                        <strong class="subvalue-number" id="stat-dew-avg">--</strong>
+                    </div>
+                    <div class="subvalue-col">
+                        <span class="subvalue-label">Time-Weighted</span>
+                        <strong class="subvalue-number" id="stat-dew-twa">--</strong>
+                    </div>
+                    <div class="subvalue-col">
+                        <span class="subvalue-label">Min / Max</span>
+                        <strong class="subvalue-number"><span id="stat-dew-min">--</span> / <span id="stat-dew-max">--</span></strong>
+                    </div>
+                    <div class="subvalue-col">
+                        <span class="subvalue-label">Samples / Age</span>
+                        <strong class="subvalue-number"><span id="stat-dew-count">--</span> (<span id="stat-dew-age">--</span>)</strong>
+                    </div>
+                    <div class="subvalue-col subvalue-full">
+                        <span class="subvalue-label">Change vs Prev Period</span>
+                        <strong class="subvalue-number" id="stat-dew-change">--</strong>
                     </div>
                 </div>
             </div>
@@ -334,9 +427,11 @@
                     </div>
                     <div class="panel-mini-stats" id="mini-stats-temperature">
                         <span class="mini-stat-item"><span class="mini-stat-label">Latest:</span> <strong id="mini-temp-latest">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Avg:</span> <strong id="mini-temp-avg">--</strong></span>
+                        <span class="mini-stat-item"><span class="mini-stat-label">Sample Avg:</span> <strong id="mini-temp-avg">--</strong></span>
+                        <span class="mini-stat-item"><span class="mini-stat-label">TWA:</span> <strong id="mini-temp-twa">--</strong></span>
                         <span class="mini-stat-item"><span class="mini-stat-label">Min:</span> <strong id="mini-temp-min">--</strong></span>
                         <span class="mini-stat-item"><span class="mini-stat-label">Max:</span> <strong id="mini-temp-max">--</strong></span>
+                        <span class="mini-stat-item"><span class="mini-stat-label">Change:</span> <strong id="mini-temp-change">--</strong></span>
                     </div>
                 </div>
                 <div class="panel-chart-wrapper">
@@ -353,9 +448,11 @@
                     </div>
                     <div class="panel-mini-stats" id="mini-stats-humidity">
                         <span class="mini-stat-item"><span class="mini-stat-label">Latest:</span> <strong id="mini-hum-latest">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Avg:</span> <strong id="mini-hum-avg">--</strong></span>
+                        <span class="mini-stat-item"><span class="mini-stat-label">Sample Avg:</span> <strong id="mini-hum-avg">--</strong></span>
+                        <span class="mini-stat-item"><span class="mini-stat-label">TWA:</span> <strong id="mini-hum-twa">--</strong></span>
                         <span class="mini-stat-item"><span class="mini-stat-label">Min:</span> <strong id="mini-hum-min">--</strong></span>
                         <span class="mini-stat-item"><span class="mini-stat-label">Max:</span> <strong id="mini-hum-max">--</strong></span>
+                        <span class="mini-stat-item"><span class="mini-stat-label">Change:</span> <strong id="mini-hum-change">--</strong></span>
                     </div>
                 </div>
                 <div class="panel-chart-wrapper">
@@ -372,13 +469,37 @@
                     </div>
                     <div class="panel-mini-stats" id="mini-stats-windspeed">
                         <span class="mini-stat-item"><span class="mini-stat-label">Latest:</span> <strong id="mini-wind-latest">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Avg:</span> <strong id="mini-wind-avg">--</strong></span>
+                        <span class="mini-stat-item"><span class="mini-stat-label">Sample Avg:</span> <strong id="mini-wind-avg">--</strong></span>
+                        <span class="mini-stat-item"><span class="mini-stat-label">TWA:</span> <strong id="mini-wind-twa">--</strong></span>
                         <span class="mini-stat-item"><span class="mini-stat-label">Min:</span> <strong id="mini-wind-min">--</strong></span>
                         <span class="mini-stat-item"><span class="mini-stat-label">Max:</span> <strong id="mini-wind-max">--</strong></span>
+                        <span class="mini-stat-item"><span class="mini-stat-label">Change:</span> <strong id="mini-wind-change">--</strong></span>
                     </div>
                 </div>
                 <div class="panel-chart-wrapper">
                     <canvas id="chart-windspeed"></canvas>
+                </div>
+            </div>
+
+            <div class="panel-card" id="panel-dewpoint">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-dot dew-dot" aria-hidden="true"></span>
+                        <span class="panel-name">Dew Point</span>
+                        <span class="unit-badge">°C</span>
+                        <span class="stat-calc-badge calc-tag" title="Calculated using Magnus-Tetens formula">Calculated</span>
+                    </div>
+                    <div class="panel-mini-stats" id="mini-stats-dewpoint">
+                        <span class="mini-stat-item"><span class="mini-stat-label">Latest:</span> <strong id="mini-dew-latest">--</strong></span>
+                        <span class="mini-stat-item"><span class="mini-stat-label">Sample Avg:</span> <strong id="mini-dew-avg">--</strong></span>
+                        <span class="mini-stat-item"><span class="mini-stat-label">TWA:</span> <strong id="mini-dew-twa">--</strong></span>
+                        <span class="mini-stat-item"><span class="mini-stat-label">Min:</span> <strong id="mini-dew-min">--</strong></span>
+                        <span class="mini-stat-item"><span class="mini-stat-label">Max:</span> <strong id="mini-dew-max">--</strong></span>
+                        <span class="mini-stat-item"><span class="mini-stat-label">Change:</span> <strong id="mini-dew-change">--</strong></span>
+                    </div>
+                </div>
+                <div class="panel-chart-wrapper">
+                    <canvas id="chart-dewpoint"></canvas>
                 </div>
             </div>
         </section>

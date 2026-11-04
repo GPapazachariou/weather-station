@@ -34,6 +34,10 @@
     --wind-subtle: rgba(5, 150, 105, 0.08);
     --wind-border: #6ee7b7;
 
+    --dew-color: #8b5cf6;
+    --dew-subtle: rgba(139, 92, 246, 0.08);
+    --dew-border: #c4b5fd;
+
     --status-live: #059669;
     --status-live-text: #065f46;
     --status-live-bg: rgba(16, 185, 129, 0.15);
@@ -931,6 +935,10 @@ body {
     border-top-color: var(--wind-color);
 }
 
+.stat-card.dew-card {
+    border-top-color: var(--dew-color);
+}
+
 .stat-header {
     display: flex;
     align-items: center;
@@ -961,6 +969,18 @@ body {
     border-radius: var(--radius-sm);
 }
 
+.stat-calc-badge, .calc-tag {
+    background: rgba(139, 92, 246, 0.12);
+    color: #6d28d9;
+    border: 1px solid rgba(139, 92, 246, 0.3);
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: var(--radius-sm);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
 .stat-value {
     font-size: 2.2rem;
     font-weight: 800;
@@ -974,6 +994,7 @@ body {
 .temp-card .stat-value { color: var(--temp-color); }
 .hum-card .stat-value { color: var(--hum-color); }
 .wind-card .stat-value { color: var(--wind-color); }
+.dew-card .stat-value { color: var(--dew-color); }
 
 .stat-time, .stat-footnote {
     font-size: 0.78rem;
@@ -983,10 +1004,18 @@ body {
 
 .stat-subvalues {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     gap: 8px;
     padding-top: 12px;
     border-top: 1px solid var(--border-subtle);
+}
+
+.subvalue-full {
+    grid-column: 1 / -1;
+}
+
+.subvalue-full .subvalue-number {
+    white-space: normal;
 }
 
 .subvalue-col {
@@ -1073,6 +1102,9 @@ body {
 .temp-dot { background: var(--temp-color); box-shadow: 0 0 8px rgba(239, 68, 68, 0.4); }
 .hum-dot { background: var(--hum-color); box-shadow: 0 0 8px rgba(2, 132, 199, 0.4); }
 .wind-dot { background: var(--wind-color); box-shadow: 0 0 8px rgba(5, 150, 105, 0.4); }
+.dew-dot { background: var(--dew-color); box-shadow: 0 0 8px rgba(139, 92, 246, 0.4); }
+
+.quick-dew .quick-val { color: var(--dew-color); }
 
 .unit-badge {
     background: var(--surface-muted);

@@ -7,7 +7,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy web app code
-COPY web.py .
+COPY web.py metrics.py ./
 COPY templates/ templates/
 COPY static/ static/
 
