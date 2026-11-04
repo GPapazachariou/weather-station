@@ -8,11 +8,12 @@ This folder contains comprehensive architecture and implementation documentation
 - **[00_overview.md](00_overview.md)** — System architecture, data flow diagrams, key concepts
 - **[architecture-decisions.md](architecture-decisions.md)** — Detailed architecture, protocol specification, and design trade-offs
 
-### Application Logic (5 files)
+### Application Logic (6 files)
 - **[app_py.md](app_py.md)** — TCP server: asyncio, multiplexing, single-writer task
 - **[protocol_py.md](protocol_py.md)** — Protocol validation: all-or-nothing semantics, field validation
 - **[client_py.md](client_py.md)** — Station client: resilience, buffering, exponential backoff
 - **[web_web_py.md](web_web_py.md)** — Flask API: endpoints, aggregations, database queries
+- **[metric_definitions.md](metric_definitions.md)** — Metric definitions: formulas (Magnus-Tetens, TWA), validity ranges, and window baselines
 - **[test_consumer_py.md](test_consumer_py.md)** — Protocol test suite: 8 comprehensive live integration tests
 
 ### Web UI (3 files)

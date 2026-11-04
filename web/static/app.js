@@ -3,6 +3,7 @@ const charts = {
     temperature: null,
     humidity: null,
     windspeed: null,
+    dew_point: null,
     single: null
 };
 
@@ -11,7 +12,8 @@ let currentRawPoints = [];
 let multiSeries = {
     temperature: [],
     humidity: [],
-    windspeed: []
+    windspeed: [],
+    dew_point: []
 };
 
 let eventSource = null;
@@ -68,8 +70,24 @@ const METRIC_CONFIGS = {
         rawBg: 'rgba(5, 150, 105, 0.12)',
         rollingBorder: '#064e3b',
         dotClass: 'wind-dot'
+    },
+    dew_point: {
+        id: 'dew_point',
+        title: 'Dew Point',
+        unit: '°C',
+        canvasId: 'chart-dewpoint',
+        color: '#8b5cf6',
+        rawBorder: '#a78bfa',
+        rawBg: 'rgba(139, 92, 246, 0.12)',
+        rollingBorder: '#6d28d9',
+        dotClass: 'dew-dot',
+        isCalculated: true
     }
 };
+
+// Aliases for compatibility
+METRIC_CONFIGS.dewpoint = METRIC_CONFIGS.dew_point;
+METRIC_CONFIGS.wind_speed = METRIC_CONFIGS.windspeed;
 
 /**
  * Save user control selections to localStorage
@@ -454,7 +472,7 @@ function handleLiveReading(reading) {
     const rollingEnabled = document.getElementById('toggleRolling')?.checked;
 
     if (metricMode === 'all') {
-        const metrics = ['temperature', 'humidity', 'windspeed'];
+        const metrics = ['temperature', 'humidity', 'windspeed', 'dew_point'];
         for (const m of metrics) {
             let val = reading[m];
             if (val === undefined && m === 'windspeed') val = reading.wind_speed;
@@ -479,6 +497,13 @@ function handleLiveReading(reading) {
                 document.getElementById('mini-wind-latest').textContent = `${valStr} m/s`;
                 const heroWind = document.getElementById('hero-quick-wind');
                 if (heroWind) heroWind.textContent = `${valStr} m/s`;
+            } else if (m === 'dew_point') {
+                const statDew = document.getElementById('stat-dew-latest');
+                if (statDew) statDew.textContent = `${valStr} °C`;
+                const miniDew = document.getElementById('mini-dew-latest');
+                if (miniDew) miniDew.textContent = `${valStr} °C`;
+                const heroDew = document.getElementById('hero-quick-dew');
+                if (heroDew) heroDew.textContent = `${valStr} °C`;
             }
 
             multiSeries[m].push({ t: reading.timestamp, v: numVal });
@@ -811,54 +836,103 @@ async function fetchStats(queryParams, signal, fetchId, station, metric, range) 
 }
 
 /**
+ * Format elapsed reading age in a human-readable form
+ */
+function formatReadingAge(ageSec) {
+    if (ageSec === null || ageSec === undefined || isNaN(ageSec)) return '--';
+    if (ageSec < 60) return `${Math.round(ageSec)}s ago`;
+    if (ageSec < 3600) return `${Math.floor(ageSec / 60)}m ago`;
+    return `${Math.floor(ageSec / 3600)}h ago`;
+}
+
+/**
+ * Format period-over-period change with sign and unit, or show reason if unavailable
+ */
+function formatPeriodChange(changeDetails, unit) {
+    if (!changeDetails) return '--';
+    if (!changeDetails.available) {
+        return changeDetails.reason ? `Unavailable (${changeDetails.reason})` : 'Unavailable';
+    }
+    const delta = changeDetails.mean_change;
+    if (delta === null || delta === undefined || isNaN(delta)) return '--';
+    const sign = delta > 0 ? '+' : '';
+    const arrow = delta > 0 ? '▲ ' : (delta < 0 ? '▼ ' : '');
+    return `${arrow}${sign}${delta.toFixed(2)} ${unit}`;
+}
+
+/**
  * Update stats cards for All Panels view
  */
 function updateMultiMetricStats(data) {
     if (!data) return;
 
-    // Temperature
-    const t = data.temperature || {};
-    document.getElementById('stat-temp-latest').textContent = t.latest !== null && t.latest !== undefined ? `${t.latest.toFixed(2)} °C` : '--';
-    document.getElementById('stat-temp-avg').textContent = t.avg !== null && t.avg !== undefined ? `${t.avg.toFixed(2)} °C` : '--';
-    document.getElementById('stat-temp-min').textContent = t.min !== null && t.min !== undefined ? `${t.min.toFixed(2)} °C` : '--';
-    document.getElementById('stat-temp-max').textContent = t.max !== null && t.max !== undefined ? `${t.max.toFixed(2)} °C` : '--';
+    const metrics = [
+        { key: 'temperature', prefix: 'temp', unit: '°C' },
+        { key: 'humidity', prefix: 'hum', unit: '%' },
+        { key: 'windspeed', prefix: 'wind', unit: 'm/s' },
+        { key: 'dew_point', prefix: 'dew', unit: '°C' }
+    ];
 
-    document.getElementById('mini-temp-latest').textContent = t.latest !== null && t.latest !== undefined ? `${t.latest.toFixed(2)} °C` : '--';
-    document.getElementById('mini-temp-avg').textContent = t.avg !== null && t.avg !== undefined ? `${t.avg.toFixed(2)} °C` : '--';
-    document.getElementById('mini-temp-min').textContent = t.min !== null && t.min !== undefined ? `${t.min.toFixed(2)} °C` : '--';
-    document.getElementById('mini-temp-max').textContent = t.max !== null && t.max !== undefined ? `${t.max.toFixed(2)} °C` : '--';
+    for (const m of metrics) {
+        const item = data[m.key] || {};
+        const p = m.prefix;
+        const u = m.unit;
 
-    // Humidity
-    const h = data.humidity || {};
-    document.getElementById('stat-hum-latest').textContent = h.latest !== null && h.latest !== undefined ? `${h.latest.toFixed(2)} %` : '--';
-    document.getElementById('stat-hum-avg').textContent = h.avg !== null && h.avg !== undefined ? `${h.avg.toFixed(2)} %` : '--';
-    document.getElementById('stat-hum-min').textContent = h.min !== null && h.min !== undefined ? `${h.min.toFixed(2)} %` : '--';
-    document.getElementById('stat-hum-max').textContent = h.max !== null && h.max !== undefined ? `${h.max.toFixed(2)} %` : '--';
+        const latestVal = item.latest !== null && item.latest !== undefined ? `${item.latest.toFixed(2)} ${u}` : '--';
+        const avgVal = item.sample_mean !== null && item.sample_mean !== undefined ? `${item.sample_mean.toFixed(2)} ${u}` : (item.avg !== null && item.avg !== undefined ? `${item.avg.toFixed(2)} ${u}` : '--');
+        const twaVal = item.time_weighted_mean !== null && item.time_weighted_mean !== undefined ? `${item.time_weighted_mean.toFixed(2)} ${u}` : '--';
+        const minVal = item.min !== null && item.min !== undefined ? `${item.min.toFixed(2)} ${u}` : '--';
+        const maxVal = item.max !== null && item.max !== undefined ? `${item.max.toFixed(2)} ${u}` : '--';
+        const countVal = item.sample_count !== null && item.sample_count !== undefined ? `${item.sample_count}` : (item.count !== null && item.count !== undefined ? `${item.count}` : '--');
+        const ageVal = formatReadingAge(item.reading_age_seconds);
+        const changeVal = formatPeriodChange(item.change_details, u);
 
-    document.getElementById('mini-hum-latest').textContent = h.latest !== null && h.latest !== undefined ? `${h.latest.toFixed(2)} %` : '--';
-    document.getElementById('mini-hum-avg').textContent = h.avg !== null && h.avg !== undefined ? `${h.avg.toFixed(2)} %` : '--';
-    document.getElementById('mini-hum-min').textContent = h.min !== null && h.min !== undefined ? `${h.min.toFixed(2)} %` : '--';
-    document.getElementById('mini-hum-max').textContent = h.max !== null && h.max !== undefined ? `${h.max.toFixed(2)} %` : '--';
+        // Update card elements
+        const statLatest = document.getElementById(`stat-${p}-latest`);
+        if (statLatest) statLatest.textContent = latestVal;
+        const statAvg = document.getElementById(`stat-${p}-avg`);
+        if (statAvg) statAvg.textContent = avgVal;
+        const statTwa = document.getElementById(`stat-${p}-twa`);
+        if (statTwa) statTwa.textContent = twaVal;
+        const statMin = document.getElementById(`stat-${p}-min`);
+        if (statMin) statMin.textContent = minVal;
+        const statMax = document.getElementById(`stat-${p}-max`);
+        if (statMax) statMax.textContent = maxVal;
+        const statCount = document.getElementById(`stat-${p}-count`);
+        if (statCount) statCount.textContent = countVal;
+        const statAge = document.getElementById(`stat-${p}-age`);
+        if (statAge) statAge.textContent = ageVal;
+        const statChange = document.getElementById(`stat-${p}-change`);
+        if (statChange) statChange.textContent = changeVal;
 
-    // Wind Speed
-    const w = data.windspeed || {};
-    document.getElementById('stat-wind-latest').textContent = w.latest !== null && w.latest !== undefined ? `${w.latest.toFixed(2)} m/s` : '--';
-    document.getElementById('stat-wind-avg').textContent = w.avg !== null && w.avg !== undefined ? `${w.avg.toFixed(2)} m/s` : '--';
-    document.getElementById('stat-wind-min').textContent = w.min !== null && w.min !== undefined ? `${w.min.toFixed(2)} m/s` : '--';
-    document.getElementById('stat-wind-max').textContent = w.max !== null && w.max !== undefined ? `${w.max.toFixed(2)} m/s` : '--';
-
-    document.getElementById('mini-wind-latest').textContent = w.latest !== null && w.latest !== undefined ? `${w.latest.toFixed(2)} m/s` : '--';
-    document.getElementById('mini-wind-avg').textContent = w.avg !== null && w.avg !== undefined ? `${w.avg.toFixed(2)} m/s` : '--';
-    document.getElementById('mini-wind-min').textContent = w.min !== null && w.min !== undefined ? `${w.min.toFixed(2)} m/s` : '--';
-    document.getElementById('mini-wind-max').textContent = w.max !== null && w.max !== undefined ? `${w.max.toFixed(2)} m/s` : '--';
+        // Update panel mini stats
+        const miniLatest = document.getElementById(`mini-${p}-latest`);
+        if (miniLatest) miniLatest.textContent = latestVal;
+        const miniAvg = document.getElementById(`mini-${p}-avg`);
+        if (miniAvg) miniAvg.textContent = avgVal;
+        const miniTwa = document.getElementById(`mini-${p}-twa`);
+        if (miniTwa) miniTwa.textContent = twaVal;
+        const miniMin = document.getElementById(`mini-${p}-min`);
+        if (miniMin) miniMin.textContent = minVal;
+        const miniMax = document.getElementById(`mini-${p}-max`);
+        if (miniMax) miniMax.textContent = maxVal;
+        const miniChange = document.getElementById(`mini-${p}-change`);
+        if (miniChange) miniChange.textContent = changeVal;
+    }
 
     // Update Hero Bar quick readings
+    const t = data.temperature || {};
+    const h = data.humidity || {};
+    const w = data.windspeed || {};
+    const d = data.dew_point || {};
     const heroTemp = document.getElementById('hero-quick-temp');
     if (heroTemp) heroTemp.textContent = t.latest !== null && t.latest !== undefined ? `${t.latest.toFixed(2)} °C` : '--';
     const heroHum = document.getElementById('hero-quick-hum');
     if (heroHum) heroHum.textContent = h.latest !== null && h.latest !== undefined ? `${h.latest.toFixed(2)} %` : '--';
     const heroWind = document.getElementById('hero-quick-wind');
     if (heroWind) heroWind.textContent = w.latest !== null && w.latest !== undefined ? `${w.latest.toFixed(2)} m/s` : '--';
+    const heroDew = document.getElementById('hero-quick-dew');
+    if (heroDew) heroDew.textContent = d.latest !== null && d.latest !== undefined ? `${d.latest.toFixed(2)} °C` : '--';
 }
 
 /**
@@ -866,21 +940,50 @@ function updateMultiMetricStats(data) {
  */
 function updateSingleMetricStats(data, metric) {
     const config = METRIC_CONFIGS[metric] || { unit: '' };
-    const valFormatted = data.latest !== null && data.latest !== undefined ? `${data.latest.toFixed(2)} ${config.unit}` : '--';
+    const u = config.unit || data.unit || '';
+    const valFormatted = data.latest !== null && data.latest !== undefined ? `${data.latest.toFixed(2)} ${u}` : '--';
+    const avgFormatted = data.sample_mean !== null && data.sample_mean !== undefined ? `${data.sample_mean.toFixed(2)} ${u}` : (data.avg !== null && data.avg !== undefined ? `${data.avg.toFixed(2)} ${u}` : '--');
+    const twaFormatted = data.time_weighted_mean !== null && data.time_weighted_mean !== undefined ? `${data.time_weighted_mean.toFixed(2)} ${u}` : '--';
+    const minFormatted = data.min !== null && data.min !== undefined ? `${data.min.toFixed(2)} ${u}` : '--';
+    const maxFormatted = data.max !== null && data.max !== undefined ? `${data.max.toFixed(2)} ${u}` : '--';
+    const countFormatted = data.sample_count !== null && data.sample_count !== undefined ? `${data.sample_count}` : (data.count !== null && data.count !== undefined ? `${data.count}` : '--');
+    const ageFormatted = formatReadingAge(data.reading_age_seconds);
+    const changeFormatted = formatPeriodChange(data.change_details, u);
+
     document.getElementById('stat-latest').textContent = valFormatted;
     document.getElementById('stat-latest-time').textContent = data.latest_t ? formatFullTimestamp(data.latest_t) : '';
-    document.getElementById('stat-avg').textContent = data.avg !== null && data.avg !== undefined ? `${data.avg.toFixed(2)} ${config.unit}` : '--';
-    document.getElementById('stat-min').textContent = data.min !== null && data.min !== undefined ? `${data.min.toFixed(2)} ${config.unit}` : '--';
-    document.getElementById('stat-max').textContent = data.max !== null && data.max !== undefined ? `${data.max.toFixed(2)} ${config.unit}` : '--';
+    document.getElementById('stat-avg').textContent = avgFormatted;
+    const statTwa = document.getElementById('stat-twa');
+    if (statTwa) statTwa.textContent = twaFormatted;
+    document.getElementById('stat-min').textContent = minFormatted;
+    document.getElementById('stat-max').textContent = maxFormatted;
+    const statCount = document.getElementById('stat-count');
+    if (statCount) statCount.textContent = countFormatted;
+    const statAge = document.getElementById('stat-age');
+    if (statAge) statAge.textContent = ageFormatted;
+    const statChange = document.getElementById('stat-change');
+    if (statChange) statChange.textContent = changeFormatted;
+    const statChangeFootnote = document.getElementById('stat-change-footnote');
+    if (statChangeFootnote) {
+        if (data.change_details && data.change_details.available) {
+            statChangeFootnote.textContent = `vs preceding equal-duration period (${data.time_window || ''})`;
+        } else if (data.change_details && data.change_details.reason) {
+            statChangeFootnote.textContent = data.change_details.reason;
+        } else {
+            statChangeFootnote.textContent = 'vs preceding equal period';
+        }
+    }
 
     // Update the selected metric in hero bar and clear unselected metrics to prevent stale station leakage
     const heroTemp = document.getElementById('hero-quick-temp');
     const heroHum = document.getElementById('hero-quick-hum');
     const heroWind = document.getElementById('hero-quick-wind');
+    const heroDew = document.getElementById('hero-quick-dew');
 
     if (heroTemp) heroTemp.textContent = (metric === 'temperature') ? valFormatted : '--';
     if (heroHum) heroHum.textContent = (metric === 'humidity') ? valFormatted : '--';
     if (heroWind) heroWind.textContent = (metric === 'windspeed' || metric === 'wind_speed') ? valFormatted : '--';
+    if (heroDew) heroDew.textContent = (metric === 'dew_point' || metric === 'dewpoint') ? valFormatted : '--';
 }
 
 /**
@@ -963,6 +1066,7 @@ async function fetchReadings(queryParams, signal, fetchId, station, metric, rang
             multiSeries.temperature = series.temperature || [];
             multiSeries.humidity = series.humidity || [];
             multiSeries.windspeed = series.windspeed || [];
+            multiSeries.dew_point = series.dew_point || [];
 
             updateMetaChips(totalPoints, totalPoints > 350);
 
@@ -970,7 +1074,8 @@ async function fetchReadings(queryParams, signal, fetchId, station, metric, rang
             const allPoints = [
                 ...(multiSeries.temperature || []),
                 ...(multiSeries.humidity || []),
-                ...(multiSeries.windspeed || [])
+                ...(multiSeries.windspeed || []),
+                ...(multiSeries.dew_point || [])
             ];
             for (const pt of allPoints) {
                 if (pt && pt.t) {
@@ -983,7 +1088,7 @@ async function fetchReadings(queryParams, signal, fetchId, station, metric, rang
                 }
             }
 
-            const hasPoints = (multiSeries.temperature.length > 0 || multiSeries.humidity.length > 0 || multiSeries.windspeed.length > 0);
+            const hasPoints = (multiSeries.temperature.length > 0 || multiSeries.humidity.length > 0 || multiSeries.windspeed.length > 0 || multiSeries.dew_point.length > 0);
             if (!hasPoints) {
                 showStationEmptyState(station, range);
             } else {
@@ -1376,7 +1481,7 @@ function refreshAllPanelsData(seriesMap, rawEnabled, rollingEnabled, windowSize,
     const { minTime, maxTime } = getCommonTimeBounds(seriesMap);
     let totalGaps = 0;
     let anyAggregated = false;
-    const metrics = ['temperature', 'humidity', 'windspeed'];
+    const metrics = ['temperature', 'humidity', 'windspeed', 'dew_point'];
 
     for (const m of metrics) {
         const c = charts[m];
@@ -1415,7 +1520,7 @@ function refreshAllPanelsData(seriesMap, rawEnabled, rollingEnabled, windowSize,
 function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, range) {
     let totalGaps = 0;
     let anyAggregated = false;
-    const metrics = ['temperature', 'humidity', 'windspeed'];
+    const metrics = ['temperature', 'humidity', 'windspeed', 'dew_point'];
     const { minTime, maxTime } = getCommonTimeBounds(seriesMap);
 
     for (const m of metrics) {
@@ -1804,6 +1909,7 @@ function renderAccessibleTable() {
             <th scope="col">Temperature (°C)</th>
             <th scope="col">Humidity (%)</th>
             <th scope="col">Wind Speed (m/s)</th>
+            <th scope="col">Dew Point (Calculated) (°C)</th>
         `;
 
         // Align rows by timestamp
@@ -1820,13 +1926,17 @@ function renderAccessibleTable() {
             if (!timeMap.has(p.t)) timeMap.set(p.t, {});
             timeMap.get(p.t).wind = p.v;
         });
+        (multiSeries.dew_point || []).forEach(p => {
+            if (!timeMap.has(p.t)) timeMap.set(p.t, {});
+            timeMap.get(p.t).dew = p.v;
+        });
 
         const sortedTimestamps = Array.from(timeMap.keys()).sort();
         if (summaryChip) summaryChip.textContent = `${sortedTimestamps.length} records`;
         if (captionEl) captionEl.textContent = `Weather telemetry records for all metrics: ${sortedTimestamps.length} entries`;
 
         if (sortedTimestamps.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; padding: 24px; color: var(--text-muted);">No records to display</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 24px; color: var(--text-muted);">No records to display</td></tr>`;
             return;
         }
 
@@ -1835,11 +1945,13 @@ function renderAccessibleTable() {
             const tempStr = (row.temp !== undefined && row.temp !== null) ? row.temp.toFixed(2) : '--';
             const humStr = (row.hum !== undefined && row.hum !== null) ? row.hum.toFixed(2) : '--';
             const windStr = (row.wind !== undefined && row.wind !== null) ? row.wind.toFixed(2) : '--';
+            const dewStr = (row.dew !== undefined && row.dew !== null) ? row.dew.toFixed(2) : '--';
             return `<tr>
                 <th scope="row">${formatUtcTimestamp(t)}</th>
                 <td>${tempStr}</td>
                 <td>${humStr}</td>
                 <td>${windStr}</td>
+                <td>${dewStr}</td>
             </tr>`;
         }).join('');
     } else {
@@ -1886,7 +1998,7 @@ window.copyTableAsCsv = function() {
     let csv = '';
 
     if (metricMode === 'all') {
-        csv = 'Timestamp,Temperature_C,Humidity_pct,WindSpeed_ms\n';
+        csv = 'Timestamp,Temperature_C,Humidity_pct,WindSpeed_ms,DewPoint_C\n';
         const timeMap = new Map();
         (multiSeries.temperature || []).forEach(p => {
             if (!timeMap.has(p.t)) timeMap.set(p.t, {});
@@ -1900,10 +2012,14 @@ window.copyTableAsCsv = function() {
             if (!timeMap.has(p.t)) timeMap.set(p.t, {});
             timeMap.get(p.t).wind = p.v;
         });
+        (multiSeries.dew_point || []).forEach(p => {
+            if (!timeMap.has(p.t)) timeMap.set(p.t, {});
+            timeMap.get(p.t).dew = p.v;
+        });
         const sortedTimestamps = Array.from(timeMap.keys()).sort();
         for (const t of sortedTimestamps) {
             const r = timeMap.get(t);
-            csv += `"${t}",${r.temp ?? ''},${r.hum ?? ''},${r.wind ?? ''}\n`;
+            csv += `"${t}",${r.temp ?? ''},${r.hum ?? ''},${r.wind ?? ''},${r.dew ?? ''}\n`;
         }
     } else {
         const config = METRIC_CONFIGS[metricMode] || { title: metricMode, unit: '' };
@@ -1946,6 +2062,8 @@ function showEmptyState() {
     if (heroHum) heroHum.textContent = '--';
     const heroWind = document.getElementById('hero-quick-wind');
     if (heroWind) heroWind.textContent = '--';
+    const heroDew = document.getElementById('hero-quick-dew');
+    if (heroDew) heroDew.textContent = '--';
     const contextStation = document.getElementById('context-station-name');
     if (contextStation) contextStation.textContent = 'None';
 }

@@ -13,6 +13,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template, request
+from metrics import (
+    calculate_dew_point,
+    calculate_period_change,
+    calculate_reading_age,
+    calculate_sample_mean,
+    calculate_time_weighted_mean,
+)
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -43,6 +50,19 @@ VALID_LIMITS = {
 }
 # Valid metrics - we'll detect actual column name at runtime
 VALID_METRICS = {"temperature", "humidity", "windspeed", "wind_speed"}
+# Valid calculated metrics (derived from paired sensor readings)
+CALCULATED_METRICS = {"dew_point", "dewpoint"}
+SUPPORTED_METRICS = VALID_METRICS | CALCULATED_METRICS
+
+# Metric unit labels for presentation
+METRIC_UNITS = {
+    "temperature": "°C",
+    "humidity": "%",
+    "windspeed": "m/s",
+    "wind_speed": "m/s",
+    "dew_point": "°C",
+    "dewpoint": "°C",
+}
 
 
 def downsample_peak_trough(points, max_points=300):
@@ -217,9 +237,11 @@ def detect_wind_column():
 
 
 def normalize_metric(metric):
-    """Convert UI metric name to actual DB column name."""
+    """Convert UI metric name to actual DB column or canonical metric name."""
     if metric in ("windspeed", "wind_speed"):
         return detect_wind_column()
+    if metric in ("dew_point", "dewpoint"):
+        return "dew_point"
     return metric
 
 
@@ -252,59 +274,174 @@ def api_stations():
         return jsonify({"stations": []})
 
 
-def _compute_metric_stats(conn, station_id, metric_col, use_limit, max_records, cutoff_iso):
-    """Compute latest, avg, min, max on the full selected dataset for a metric column."""
-    if use_limit:
-        cursor = conn.execute(
-            f"""
-            SELECT timestamp, {metric_col}
-            FROM readings
-            WHERE station_id = ? AND {metric_col} IS NOT NULL
-            ORDER BY timestamp DESC
-            LIMIT ?
-            """,
-            (station_id, max_records),
-        )
-        rows = cursor.fetchall()
-        values = [row[metric_col] for row in rows]
-        if values:
-            return {
-                "latest": round(values[0], 2),
-                "latest_t": rows[0]["timestamp"],
-                "avg": round(sum(values) / len(values), 2),
-                "min": round(min(values), 2),
-                "max": round(max(values), 2),
-            }
-        return {"latest": None, "latest_t": None, "avg": None, "min": None, "max": None}
-    else:
-        where_clause = (
-            f"WHERE station_id = ? AND timestamp >= ? AND {metric_col} IS NOT NULL"
-            if cutoff_iso
-            else f"WHERE station_id = ? AND {metric_col} IS NOT NULL"
-        )
-        params = (station_id, cutoff_iso) if cutoff_iso else (station_id,)
-        agg_cursor = conn.execute(
-            f"SELECT AVG({metric_col}), MIN({metric_col}), MAX({metric_col}), COUNT(*) FROM readings {where_clause}",
-            params,
-        )
-        avg_val, min_val, max_val, point_count = agg_cursor.fetchone()
-
-        if point_count > 0 and avg_val is not None:
-            latest_cursor = conn.execute(
-                f"SELECT timestamp, {metric_col} FROM readings {where_clause} ORDER BY timestamp DESC LIMIT 1",
+def _compute_metric_stats(
+    conn,
+    station_id,
+    metric_col,
+    use_limit,
+    max_records,
+    cutoff_iso,
+    time_range="24h",
+    prev_cutoff_iso=None,
+):
+    """Compute complete metric statistics over the full selected dataset for a metric column."""
+    if metric_col in ("dew_point", "dewpoint"):
+        if use_limit:
+            cursor = conn.execute(
+                """
+                SELECT timestamp, temperature, humidity
+                FROM readings
+                WHERE station_id = ? AND temperature IS NOT NULL AND humidity IS NOT NULL
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                (station_id, max_records),
+            )
+            rows = cursor.fetchall()
+            valid = []
+            for r in rows:
+                dp = calculate_dew_point(r["temperature"], r["humidity"])
+                if dp is not None:
+                    valid.append((r["timestamp"], dp))
+        else:
+            where_clause = (
+                "WHERE station_id = ? AND timestamp >= ? AND temperature IS NOT NULL AND humidity IS NOT NULL"
+                if cutoff_iso
+                else "WHERE station_id = ? AND temperature IS NOT NULL AND humidity IS NOT NULL"
+            )
+            params = (station_id, cutoff_iso) if cutoff_iso else (station_id,)
+            cursor = conn.execute(
+                f"SELECT timestamp, temperature, humidity FROM readings {where_clause} ORDER BY timestamp ASC",
                 params,
             )
-            latest_row = latest_cursor.fetchone()
-            latest = latest_row[metric_col] if latest_row else None
-            latest_t = latest_row["timestamp"] if latest_row else None
-            return {
-                "latest": round(latest, 2) if latest is not None else None,
-                "latest_t": latest_t,
-                "avg": round(avg_val, 2),
-                "min": round(min_val, 2),
-                "max": round(max_val, 2),
-            }
+            rows = cursor.fetchall()
+            valid = []
+            for r in rows:
+                dp = calculate_dew_point(r["temperature"], r["humidity"])
+                if dp is not None:
+                    valid.append((r["timestamp"], dp))
+    else:
+        if use_limit:
+            cursor = conn.execute(
+                f"""
+                SELECT timestamp, {metric_col}
+                FROM readings
+                WHERE station_id = ? AND {metric_col} IS NOT NULL
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                (station_id, max_records),
+            )
+            rows = cursor.fetchall()
+            valid = [(r["timestamp"], r[metric_col]) for r in rows if r[metric_col] is not None]
+        else:
+            where_clause = (
+                f"WHERE station_id = ? AND timestamp >= ? AND {metric_col} IS NOT NULL"
+                if cutoff_iso
+                else f"WHERE station_id = ? AND {metric_col} IS NOT NULL"
+            )
+            params = (station_id, cutoff_iso) if cutoff_iso else (station_id,)
+            cursor = conn.execute(
+                f"SELECT timestamp, {metric_col} FROM readings {where_clause} ORDER BY timestamp ASC",
+                params,
+            )
+            rows = cursor.fetchall()
+            valid = [(r["timestamp"], r[metric_col]) for r in rows if r[metric_col] is not None]
+
+    if not valid:
         return {"latest": None, "latest_t": None, "avg": None, "min": None, "max": None}
+
+    chronological = list(reversed(valid)) if use_limit else valid
+    latest_entry = valid[0] if use_limit else valid[-1]
+    latest = round(latest_entry[1], 2)
+    latest_t = latest_entry[0]
+    values = [v for _, v in valid]
+    min_val = round(min(values), 2)
+    max_val = round(max(values), 2)
+    sample_mean = calculate_sample_mean(values)
+    count = len(values)
+    reading_age = calculate_reading_age(latest_t)
+
+    # Time-weighted average over chronological series
+    series_dt = []
+    for t_str, val in chronological:
+        try:
+            norm_ts = t_str[:-1] + "+00:00" if t_str.endswith(("Z", "z")) else t_str
+            dt = datetime.fromisoformat(norm_ts)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            series_dt.append((dt, val))
+        except (ValueError, TypeError):
+            continue
+    time_weighted_mean = calculate_time_weighted_mean(series_dt)
+
+    # Preceding equal-duration period comparison
+    if not use_limit and cutoff_iso and prev_cutoff_iso:
+        prev_params = (station_id, prev_cutoff_iso, cutoff_iso)
+        if metric_col in ("dew_point", "dewpoint"):
+            prev_cursor = conn.execute(
+                """
+                SELECT timestamp, temperature, humidity FROM readings
+                WHERE station_id = ? AND timestamp >= ? AND timestamp < ?
+                AND temperature IS NOT NULL AND humidity IS NOT NULL
+                ORDER BY timestamp ASC
+                """,
+                prev_params,
+            )
+            prev_rows = prev_cursor.fetchall()
+            prev_valid = []
+            for r in prev_rows:
+                dp = calculate_dew_point(r["temperature"], r["humidity"])
+                if dp is not None:
+                    prev_valid.append(dp)
+        else:
+            prev_cursor = conn.execute(
+                f"""
+                SELECT {metric_col} FROM readings
+                WHERE station_id = ? AND timestamp >= ? AND timestamp < ?
+                AND {metric_col} IS NOT NULL
+                ORDER BY timestamp ASC
+                """,
+                prev_params,
+            )
+            prev_rows = prev_cursor.fetchall()
+            prev_valid = [r[metric_col] for r in prev_rows if r[metric_col] is not None]
+
+        prev_count = len(prev_valid)
+        prev_mean = calculate_sample_mean(prev_valid) if prev_count > 0 else None
+        prev_latest = round(prev_valid[-1], 2) if prev_count > 0 else None
+        change_dict = calculate_period_change(
+            sample_mean,
+            prev_mean,
+            latest,
+            prev_latest,
+            time_range,
+            is_limit=False,
+            prev_count=prev_count,
+        )
+    else:
+        change_dict = calculate_period_change(
+            sample_mean, None, latest, None, time_range, is_limit=use_limit, prev_count=0
+        )
+
+    unit = METRIC_UNITS.get(metric_col, "")
+    return {
+        "latest": latest,
+        "latest_t": latest_t,
+        "avg": sample_mean,
+        "sample_mean": sample_mean,
+        "time_weighted_mean": time_weighted_mean,
+        "min": min_val,
+        "max": max_val,
+        "count": count,
+        "sample_count": count,
+        "reading_age_seconds": reading_age,
+        "change": change_dict.get("mean_change"),
+        "change_details": change_dict,
+        "unit": unit,
+        "time_window": f"limit={max_records}" if use_limit else f"range={time_range}",
+        "is_calculated": metric_col in ("dew_point", "dewpoint"),
+    }
 
 
 @app.route("/api/stats", methods=["GET"])
@@ -314,7 +451,7 @@ def api_stats():
     Calculated from the FULL selected dataset.
     Query params:
       - station_id (required)
-      - metric (required): temperature, humidity, windspeed, or all
+      - metric (required): temperature, humidity, windspeed, dew_point, or all
       - range (optional): 1h, 6h, 24h, 7d, 30d, all
       - limit (optional): 10, 50, 100, 500, 1000
     """
@@ -324,7 +461,7 @@ def api_stats():
     limit = request.args.get("limit", "").strip()
 
     # Validation
-    if not station_id or (metric not in VALID_METRICS and metric != "all"):
+    if not station_id or (metric not in SUPPORTED_METRICS and metric != "all"):
         return (
             jsonify(
                 {
@@ -356,10 +493,13 @@ def api_stats():
             400,
         )
 
-    # Calculate UTC time window (if time-based)
+    # Calculate UTC time windows (current window and preceding equal-duration window)
     delta = VALID_RANGES.get(time_range) if not use_limit else None
-    cutoff_dt = (datetime.now(timezone.utc) - delta) if (not use_limit and delta is not None) else None
+    now_dt = datetime.now(timezone.utc)
+    cutoff_dt = (now_dt - delta) if (not use_limit and delta is not None) else None
     cutoff_iso = cutoff_dt.isoformat() if cutoff_dt else None
+    prev_cutoff_dt = (cutoff_dt - delta) if (cutoff_dt and delta is not None) else None
+    prev_cutoff_iso = prev_cutoff_dt.isoformat() if prev_cutoff_dt else None
     max_records = VALID_LIMITS.get(limit) if use_limit else None
 
     try:
@@ -367,13 +507,50 @@ def api_stats():
             if metric == "all":
                 wind_col = detect_wind_column()
                 result = {
-                    "temperature": _compute_metric_stats(conn, station_id, "temperature", use_limit, max_records, cutoff_iso),
-                    "humidity": _compute_metric_stats(conn, station_id, "humidity", use_limit, max_records, cutoff_iso),
-                    "windspeed": _compute_metric_stats(conn, station_id, wind_col, use_limit, max_records, cutoff_iso),
+                    "temperature": _compute_metric_stats(
+                        conn,
+                        station_id,
+                        "temperature",
+                        use_limit,
+                        max_records,
+                        cutoff_iso,
+                        time_range,
+                        prev_cutoff_iso,
+                    ),
+                    "humidity": _compute_metric_stats(
+                        conn,
+                        station_id,
+                        "humidity",
+                        use_limit,
+                        max_records,
+                        cutoff_iso,
+                        time_range,
+                        prev_cutoff_iso,
+                    ),
+                    "windspeed": _compute_metric_stats(
+                        conn,
+                        station_id,
+                        wind_col,
+                        use_limit,
+                        max_records,
+                        cutoff_iso,
+                        time_range,
+                        prev_cutoff_iso,
+                    ),
+                    "dew_point": _compute_metric_stats(
+                        conn,
+                        station_id,
+                        "dew_point",
+                        use_limit,
+                        max_records,
+                        cutoff_iso,
+                        time_range,
+                        prev_cutoff_iso,
+                    ),
                 }
             else:
                 db_metric = normalize_metric(metric)
-                if db_metric not in {"temperature", "humidity", "windspeed", "wind_speed"}:
+                if db_metric not in {"temperature", "humidity", "windspeed", "wind_speed", "dew_point"}:
                     return (
                         jsonify(
                             {
@@ -387,7 +564,16 @@ def api_stats():
                         ),
                         400,
                     )
-                result = _compute_metric_stats(conn, station_id, db_metric, use_limit, max_records, cutoff_iso)
+                result = _compute_metric_stats(
+                    conn,
+                    station_id,
+                    db_metric,
+                    use_limit,
+                    max_records,
+                    cutoff_iso,
+                    time_range,
+                    prev_cutoff_iso,
+                )
 
         range_label = f"limit={limit}" if use_limit else f"range={time_range}"
         logger.info(f"Stats for {station_id}/{metric}/{range_label} calculated from full dataset")
@@ -426,7 +612,7 @@ def api_readings():
     downsample_arg = request.args.get("downsample", "").strip()
 
     # Validation
-    if not station_id or (metric not in VALID_METRICS and metric != "all"):
+    if not station_id or (metric not in SUPPORTED_METRICS and metric != "all"):
         return jsonify({"error": "Invalid parameters", "points": []}), 400
 
     # Determine if we're using time-based or record-based filtering
@@ -476,6 +662,11 @@ def api_readings():
                 temp_pts = [{"t": r["timestamp"], "v": r["temperature"]} for r in rows]
                 hum_pts = [{"t": r["timestamp"], "v": r["humidity"]} for r in rows]
                 wind_pts = [{"t": r["timestamp"], "v": r[wind_col]} for r in rows]
+                dew_pts = [
+                    {"t": r["timestamp"], "v": calculate_dew_point(r["temperature"], r["humidity"])}
+                    for r in rows
+                ]
+                dew_pts = [p for p in dew_pts if p["v"] is not None]
 
                 raw_len = len(rows)
                 is_aggregated = bool(max_pts and raw_len > max_pts)
@@ -483,6 +674,7 @@ def api_readings():
                     temp_pts = downsample_peak_trough(temp_pts, max_pts)
                     hum_pts = downsample_peak_trough(hum_pts, max_pts)
                     wind_pts = downsample_peak_trough(wind_pts, max_pts)
+                    dew_pts = downsample_peak_trough(dew_pts, max_pts)
 
                 points = [
                     {
@@ -490,6 +682,7 @@ def api_readings():
                         "temperature": r["temperature"],
                         "humidity": r["humidity"],
                         "windspeed": r[wind_col],
+                        "dew_point": calculate_dew_point(r["temperature"], r["humidity"]),
                     }
                     for r in rows
                 ]
@@ -499,6 +692,7 @@ def api_readings():
                         "temperature": temp_pts,
                         "humidity": hum_pts,
                         "windspeed": wind_pts,
+                        "dew_point": dew_pts,
                     },
                     "aggregated": is_aggregated,
                     "total_points": raw_len,
@@ -507,53 +701,110 @@ def api_readings():
 
             # Single metric query
             db_metric = normalize_metric(metric)
-            if db_metric not in {"temperature", "humidity", "windspeed", "wind_speed"}:
+            if db_metric not in {"temperature", "humidity", "windspeed", "wind_speed", "dew_point"}:
                 return jsonify({"error": "Invalid metric", "points": []}), 400
 
-            if since:
-                cursor = conn.execute(
-                    f"""
-                    SELECT timestamp, {db_metric}
-                    FROM readings
-                    WHERE station_id = ? AND timestamp > ? AND {db_metric} IS NOT NULL
-                    ORDER BY timestamp ASC
-                    """,
-                    (station_id, since),
-                )
-                rows = cursor.fetchall()
-                points = [{"t": row["timestamp"], "v": row[db_metric]} for row in rows]
-            elif use_limit:
-                max_records = VALID_LIMITS[limit]
-                cursor = conn.execute(
-                    f"""
-                    SELECT timestamp, {db_metric}
-                    FROM readings
-                    WHERE station_id = ? AND {db_metric} IS NOT NULL
-                    ORDER BY timestamp DESC
-                    LIMIT ?
-                    """,
-                    (station_id, max_records),
-                )
-                rows = cursor.fetchall()
-                points = [{"t": row["timestamp"], "v": row[db_metric]} for row in reversed(rows)]
+            if db_metric == "dew_point":
+                cols = "timestamp, temperature, humidity"
+                if since:
+                    cursor = conn.execute(
+                        f"""
+                        SELECT {cols}
+                        FROM readings
+                        WHERE station_id = ? AND timestamp > ? AND temperature IS NOT NULL AND humidity IS NOT NULL
+                        ORDER BY timestamp ASC
+                        """,
+                        (station_id, since),
+                    )
+                    rows = cursor.fetchall()
+                    points = [
+                        {"t": r["timestamp"], "v": calculate_dew_point(r["temperature"], r["humidity"])}
+                        for r in rows
+                    ]
+                elif use_limit:
+                    max_records = VALID_LIMITS[limit]
+                    cursor = conn.execute(
+                        f"""
+                        SELECT {cols}
+                        FROM readings
+                        WHERE station_id = ? AND temperature IS NOT NULL AND humidity IS NOT NULL
+                        ORDER BY timestamp DESC
+                        LIMIT ?
+                        """,
+                        (station_id, max_records),
+                    )
+                    rows = cursor.fetchall()
+                    points = [
+                        {"t": r["timestamp"], "v": calculate_dew_point(r["temperature"], r["humidity"])}
+                        for r in reversed(rows)
+                    ]
+                else:
+                    where = (
+                        "WHERE station_id = ? AND timestamp >= ? AND temperature IS NOT NULL AND humidity IS NOT NULL"
+                        if cutoff_iso
+                        else "WHERE station_id = ? AND temperature IS NOT NULL AND humidity IS NOT NULL"
+                    )
+                    params = (station_id, cutoff_iso) if cutoff_iso else (station_id,)
+                    cursor = conn.execute(
+                        f"""
+                        SELECT {cols}
+                        FROM readings
+                        {where}
+                        ORDER BY timestamp ASC
+                        """,
+                        params,
+                    )
+                    rows = cursor.fetchall()
+                    points = [
+                        {"t": r["timestamp"], "v": calculate_dew_point(r["temperature"], r["humidity"])}
+                        for r in rows
+                    ]
+                points = [p for p in points if p["v"] is not None]
             else:
-                where = (
-                    f"WHERE station_id = ? AND timestamp >= ? AND {db_metric} IS NOT NULL"
-                    if cutoff_iso
-                    else f"WHERE station_id = ? AND {db_metric} IS NOT NULL"
-                )
-                params = (station_id, cutoff_iso) if cutoff_iso else (station_id,)
-                cursor = conn.execute(
-                    f"""
-                    SELECT timestamp, {db_metric}
-                    FROM readings
-                    {where}
-                    ORDER BY timestamp ASC
-                    """,
-                    params,
-                )
-                rows = cursor.fetchall()
-                points = [{"t": row["timestamp"], "v": row[db_metric]} for row in rows]
+                if since:
+                    cursor = conn.execute(
+                        f"""
+                        SELECT timestamp, {db_metric}
+                        FROM readings
+                        WHERE station_id = ? AND timestamp > ? AND {db_metric} IS NOT NULL
+                        ORDER BY timestamp ASC
+                        """,
+                        (station_id, since),
+                    )
+                    rows = cursor.fetchall()
+                    points = [{"t": row["timestamp"], "v": row[db_metric]} for row in rows]
+                elif use_limit:
+                    max_records = VALID_LIMITS[limit]
+                    cursor = conn.execute(
+                        f"""
+                        SELECT timestamp, {db_metric}
+                        FROM readings
+                        WHERE station_id = ? AND {db_metric} IS NOT NULL
+                        ORDER BY timestamp DESC
+                        LIMIT ?
+                        """,
+                        (station_id, max_records),
+                    )
+                    rows = cursor.fetchall()
+                    points = [{"t": row["timestamp"], "v": row[db_metric]} for row in reversed(rows)]
+                else:
+                    where = (
+                        f"WHERE station_id = ? AND timestamp >= ? AND {db_metric} IS NOT NULL"
+                        if cutoff_iso
+                        else f"WHERE station_id = ? AND {db_metric} IS NOT NULL"
+                    )
+                    params = (station_id, cutoff_iso) if cutoff_iso else (station_id,)
+                    cursor = conn.execute(
+                        f"""
+                        SELECT timestamp, {db_metric}
+                        FROM readings
+                        {where}
+                        ORDER BY timestamp ASC
+                        """,
+                        params,
+                    )
+                    rows = cursor.fetchall()
+                    points = [{"t": row["timestamp"], "v": row[db_metric]} for row in rows]
 
         raw_count = len(points)
         is_aggregated = bool(max_pts and raw_count > max_pts)
@@ -676,6 +927,9 @@ def api_stream():
                                 "humidity": row["humidity"],
                                 "windspeed": row[wind_col],
                                 "wind_speed": row[wind_col],
+                                "dew_point": calculate_dew_point(
+                                    row["temperature"], row["humidity"]
+                                ),
                             }
                             yield f"id: {last_id}\ndata: {json.dumps(data)}\n\n"
                             events_yielded += 1

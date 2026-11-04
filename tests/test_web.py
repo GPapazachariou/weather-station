@@ -963,3 +963,184 @@ class TestGraphAndDownsamplingEnhancements:
         assert data["humidity"]["latest"] is not None
         assert data["windspeed"]["latest"] is not None
 
+
+# ============================================================================
+# 9. Enhanced Metrics & Calculated Dew Point API Tests
+# ============================================================================
+
+
+class TestEnhancedMetricsApi:
+    """Comprehensive API tests for enhanced weather metrics and calculated dew point."""
+
+    def test_stats_contains_all_required_enhanced_metric_fields(self, client):
+        """Stats response must include latest, min, max, sample mean, time-weighted mean, count, age, and change."""
+        res = client.get("/api/stats?station_id=STATION-001&metric=temperature&range=24h")
+        assert res.status_code == 200
+        data = res.get_json()
+
+        # Core statistics
+        assert "latest" in data and data["latest"] is not None
+        assert "min" in data and data["min"] is not None
+        assert "max" in data and data["max"] is not None
+        assert "avg" in data and data["avg"] is not None
+        assert "sample_mean" in data and data["sample_mean"] == data["avg"]
+        assert "time_weighted_mean" in data and data["time_weighted_mean"] is not None
+        assert "count" in data and data["count"] > 0
+        assert "sample_count" in data and data["sample_count"] == data["count"]
+        assert "reading_age_seconds" in data and data["reading_age_seconds"] is not None
+        assert data["reading_age_seconds"] >= 0.0
+
+        # Units and window
+        assert data["unit"] == "°C"
+        assert "range=24h" in data["time_window"]
+        assert data["is_calculated"] is False
+
+        # Period comparison details
+        assert "change_details" in data
+        assert "available" in data["change_details"]
+
+    def test_stats_calculated_dew_point_single_and_all(self, client):
+        """Dew point must be calculated from paired readings, labeled as calculated, with °C unit."""
+        # Single metric query
+        res_single = client.get("/api/stats?station_id=STATION-001&metric=dew_point&range=24h")
+        assert res_single.status_code == 200
+        dp_data = res_single.get_json()
+
+        assert dp_data["latest"] is not None
+        assert dp_data["sample_mean"] is not None
+        assert dp_data["time_weighted_mean"] is not None
+        assert dp_data["min"] <= dp_data["sample_mean"] <= dp_data["max"]
+        assert dp_data["unit"] == "°C"
+        assert dp_data["is_calculated"] is True
+
+        # Multi-metric query (metric=all)
+        res_all = client.get("/api/stats?station_id=STATION-001&metric=all&range=24h")
+        assert res_all.status_code == 200
+        all_data = res_all.get_json()
+
+        assert "dew_point" in all_data
+        assert all_data["dew_point"]["is_calculated"] is True
+        assert all_data["dew_point"]["latest"] is not None
+        assert all_data["dew_point"]["unit"] == "°C"
+
+    def test_stats_preceding_period_change_available(self, tmp_path: Path):
+        """When preceding equal-duration period has telemetry, change against preceding period is available."""
+        test_db = tmp_path / "period_test.db"
+        conn = sqlite3.connect(str(test_db))
+        conn.execute(
+            """
+            CREATE TABLE readings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                station_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                temperature REAL NOT NULL,
+                humidity REAL NOT NULL,
+                windspeed REAL NOT NULL
+            )
+            """
+        )
+        now = datetime.now(timezone.utc)
+        # Current period: last 6 hours (now - 6h to now), constant 25.0°C
+        # Preceding period: (now - 12h to now - 6h), constant 20.0°C
+        rows = [
+            ("STN-P", (now - timedelta(hours=9)).isoformat(), 20.0, 50.0, 5.0),
+            ("STN-P", (now - timedelta(hours=8)).isoformat(), 20.0, 50.0, 5.0),
+            ("STN-P", (now - timedelta(hours=3)).isoformat(), 25.0, 50.0, 5.0),
+            ("STN-P", (now - timedelta(hours=1)).isoformat(), 25.0, 50.0, 5.0),
+        ]
+        conn.executemany(
+            "INSERT INTO readings (station_id, timestamp, temperature, humidity, windspeed) VALUES (?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
+        conn.close()
+
+        web.DB_PATH = test_db
+        with web.app.test_client() as c:
+            res = c.get("/api/stats?station_id=STN-P&metric=temperature&range=6h")
+            assert res.status_code == 200
+            data = res.get_json()
+            assert data["change_details"]["available"] is True
+            assert data["change_details"]["mean_change"] == 5.0  # 25.0 - 20.0
+            assert data["change_details"]["prev_count"] == 2
+            assert data["change"] == 5.0
+
+    def test_stats_preceding_period_change_unavailable_all_and_limit(self, client):
+        """Comparisons are explicitly unavailable for range=all and limit windows."""
+        res_all = client.get("/api/stats?station_id=STATION-001&metric=temperature&range=all")
+        assert res_all.status_code == 200
+        data_all = res_all.get_json()
+        assert data_all["change_details"]["available"] is False
+        assert "all history" in data_all["change_details"]["reason"].lower()
+
+        res_limit = client.get("/api/stats?station_id=STATION-001&metric=temperature&limit=50")
+        assert res_limit.status_code == 200
+        data_limit = res_limit.get_json()
+        assert data_limit["change_details"]["available"] is False
+        assert "record count" in data_limit["change_details"]["reason"].lower()
+
+    def test_stats_preceding_period_change_unavailable_no_prior_readings(self, tmp_path: Path):
+        """When preceding equal-duration period contains 0 readings, comparison is unavailable."""
+        test_db = tmp_path / "no_prior.db"
+        conn = sqlite3.connect(str(test_db))
+        conn.execute(
+            """
+            CREATE TABLE readings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                station_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                temperature REAL NOT NULL,
+                humidity REAL NOT NULL,
+                windspeed REAL NOT NULL
+            )
+            """
+        )
+        now = datetime.now(timezone.utc)
+        # Only readings in last 1 hour, no readings between now - 2h and now - 1h
+        conn.execute(
+            "INSERT INTO readings (station_id, timestamp, temperature, humidity, windspeed) VALUES (?, ?, ?, ?, ?)",
+            ("STN-SINGLE", (now - timedelta(minutes=30)).isoformat(), 21.0, 55.0, 4.0),
+        )
+        conn.commit()
+        conn.close()
+
+        web.DB_PATH = test_db
+        with web.app.test_client() as c:
+            res = c.get("/api/stats?station_id=STN-SINGLE&metric=temperature&range=1h")
+            assert res.status_code == 200
+            data = res.get_json()
+            assert data["change_details"]["available"] is False
+            assert "preceding period" in data["change_details"]["reason"].lower()
+
+    def test_readings_all_includes_calculated_dew_point(self, client):
+        """Readings with metric=all must include dew_point in points and series."""
+        res = client.get("/api/readings?station_id=STATION-001&metric=all&limit=10")
+        assert res.status_code == 200
+        data = res.get_json()
+
+        assert "dew_point" in data["series"]
+        assert len(data["series"]["dew_point"]) == 10
+        for p in data["points"]:
+            assert "dew_point" in p
+            assert p["dew_point"] is not None
+
+    def test_readings_single_calculated_dew_point(self, client):
+        """Readings with metric=dew_point returns calculated time series."""
+        res = client.get("/api/readings?station_id=STATION-001&metric=dew_point&limit=10")
+        assert res.status_code == 200
+        data = res.get_json()
+        assert len(data["points"]) == 10
+        for p in data["points"]:
+            assert "t" in p and "v" in p
+            assert p["v"] is not None
+
+    def test_stream_includes_calculated_dew_point(self, client):
+        """Live SSE stream payload includes calculated dew_point."""
+        res = client.get("/api/stream?station_id=STATION-001&since_id=0&limit=1&poll_interval=0.01")
+        assert res.status_code == 200
+        text = res.data.decode("utf-8")
+        data_line = [line for line in text.split("\n") if line.startswith("data: ")][0]
+        reading = json.loads(data_line[len("data: ") :])
+        assert "dew_point" in reading
+        assert reading["dew_point"] is not None
+
