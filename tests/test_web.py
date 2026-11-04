@@ -105,6 +105,8 @@ def test_index_page(client):
     assert b"Weather Station Dashboard" in response.data
     assert b"live-indicator" in response.data
     assert b"last-updated" in response.data
+    assert response.data.count(b'id="stats-container"') == 1
+    assert response.data.count(b'id="stat-latest"') == 1
 
 
 class TestAccessibilityAndUX:
@@ -280,6 +282,14 @@ class TestStatsApi:
             "avg": None,
             "min": None,
             "max": None,
+            "sample_mean": None, "time_weighted_mean": None,
+            "count": 0, "sample_count": 0, "reading_age_seconds": None, "change": None,
+            "change_details": {
+                "available": False, "reason": "No readings in preceding period",
+                "mean_change": None, "latest_change": None,
+                "prev_mean": None, "prev_latest": None, "prev_count": 0,
+            },
+            "unit": "\u00b0C", "time_window": "range=24h", "is_calculated": False,
         }
 
     def test_stats_limit_aggregation(self, client, test_db_path: Path):
@@ -1144,3 +1154,17 @@ class TestEnhancedMetricsApi:
         assert "dew_point" in reading
         assert reading["dew_point"] is not None
 
+
+
+@pytest.mark.parametrize("metric,unit", [("temperature", "°C"), ("humidity", "%"), ("windspeed", "m/s"), ("dew_point", "°C")])
+@pytest.mark.parametrize("window,reason", [("range=24h", "No readings in preceding period"), ("range=all", "Comparison unavailable for all history"), ("limit=10", "Comparison unavailable for record count window")])
+def test_empty_metric_metadata(client, metric, unit, window, reason):
+    data = client.get(f"/api/stats?station_id=NONEXISTENT&metric={metric}&{window}").get_json()
+    assert data["sample_count"] == data["count"] == 0
+    assert data["unit"] == unit
+    assert data["is_calculated"] == (metric == "dew_point")
+    assert data["sample_mean"] is data["time_weighted_mean"] is None
+    assert data["reading_age_seconds"] is data["change"] is None
+    assert data["change_details"]["available"] is False
+    assert data["change_details"]["reason"] == reason
+    assert data["time_window"] == window

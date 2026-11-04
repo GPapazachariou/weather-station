@@ -349,7 +349,17 @@ def _compute_metric_stats(
             valid = [(r["timestamp"], r[metric_col]) for r in rows if r[metric_col] is not None]
 
     if not valid:
-        return {"latest": None, "latest_t": None, "avg": None, "min": None, "max": None}
+        return {
+            "latest": None, "latest_t": None, "avg": None, "min": None, "max": None,
+            "sample_mean": None, "time_weighted_mean": None,
+            "count": 0, "sample_count": 0, "reading_age_seconds": None, "change": None,
+            "change_details": calculate_period_change(
+                None, None, None, None, time_range, is_limit=use_limit
+            ),
+            "unit": METRIC_UNITS.get(metric_col, ""),
+            "time_window": f"limit={max_records}" if use_limit else f"range={time_range}",
+            "is_calculated": metric_col in ("dew_point", "dewpoint"),
+        }
 
     chronological = list(reversed(valid)) if use_limit else valid
     latest_entry = valid[0] if use_limit else valid[-1]

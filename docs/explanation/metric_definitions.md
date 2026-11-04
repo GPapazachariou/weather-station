@@ -36,7 +36,7 @@ Continuous physical phenomena often experience irregular sample intervals (e.g.,
 The Time-Weighted Average integrates observations across time using trapezoidal interpolation:
 $$\bar{x}_{\text{TWA}} = \frac{1}{t_N - t_1} \sum_{i=1}^{N-1} \left( \frac{x_i + x_{i+1}}{2} \right) \cdot (t_{i+1} - t_i)$$
 * **Identical timestamps:** Consecutive points with $t_{i+1} = t_i$ contribute zero interval duration and avoid zero-division.
-* **Single point / zero total elapsed time:** Falls back gracefully to the single point's value.
+* **Single point / zero total elapsed time:** Uses the single point's value, or the sample mean when multiple points share one timestamp.
 
 ### 2.4 Period-Over-Period Change
 Compares the current window against an immediately preceding equal-duration window $[T_{\text{start}} - \Delta t, T_{\text{start}}]$:
@@ -55,7 +55,7 @@ Comparisons are marked unavailable with clear, documented reasons:
 Dew point is the temperature to which air must be cooled at constant pressure to become saturated with water vapor.
 
 ### 3.1 Magnus-Tetens Formulation
-Dew point is derived from paired temperature ($T$, °C) and relative humidity ($RH$, %) readings using the Arden Buck / Magnus-Tetens formulation recommended by NOAA and WMO:
+Dew point is derived from paired temperature ($T$, °C) and relative humidity ($RH$, %) readings using the Magnus-Tetens approximation:
 
 $$\gamma(T, RH) = \frac{a \cdot T}{b + T} + \ln\left(\frac{RH}{100}\right)$$
 
@@ -66,7 +66,7 @@ $$T_d = \frac{b \cdot \gamma(T, RH)}{a - \gamma(T, RH)}$$
   * $b = 237.7^\circ\text{C}$
 
 ### 3.2 Validity Input Bounds & Safeguards
-* Temperature validity domain: $-40^\circ\text{C} \le T \le 60^\circ\text{C}$.
+* Temperature validity domain: $-10^\circ\text{C} \le T \le 40^\circ\text{C}$.
 * Relative humidity validity domain: $0\% < RH \le 100\%$.
 * At $100\%$ RH, $T_d = T$.
 * For non-positive RH ($RH \le 0$), out-of-range temperatures, or missing/null inputs, the calculation returns `None` without polluting aggregations.

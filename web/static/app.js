@@ -285,7 +285,14 @@ window.manualReconnect = function() {
  */
 function startLastUpdatedTimer() {
     if (lastUpdatedTimer) clearInterval(lastUpdatedTimer);
-    lastUpdatedTimer = setInterval(updateLastUpdatedDisplay, 1000);
+    lastUpdatedTimer = setInterval(() => {
+        updateLastUpdatedDisplay();
+        document.querySelectorAll('[data-reading-timestamp]').forEach(el => {
+            const timestamp = el.dataset.readingTimestamp;
+            const age = timestamp ? Math.max(0, (Date.now() - new Date(timestamp).getTime()) / 1000) : null;
+            el.textContent = formatReadingAge(age);
+        });
+    }, 1000);
 }
 
 /**
@@ -693,6 +700,10 @@ async function refreshAll() {
     const fetchId = ++currentFetchId;
 
     isRefreshing = true;
+    document.querySelectorAll('[data-reading-timestamp]').forEach(el => {
+        el.dataset.readingTimestamp = '';
+        el.textContent = '--';
+    });
 
     // Show loading state
     const loadingChip = document.getElementById('meta-loading');
@@ -901,7 +912,10 @@ function updateMultiMetricStats(data) {
         const statCount = document.getElementById(`stat-${p}-count`);
         if (statCount) statCount.textContent = countVal;
         const statAge = document.getElementById(`stat-${p}-age`);
-        if (statAge) statAge.textContent = ageVal;
+        if (statAge) {
+            statAge.textContent = ageVal;
+            statAge.dataset.readingTimestamp = item.latest_t || '';
+        }
         const statChange = document.getElementById(`stat-${p}-change`);
         if (statChange) statChange.textContent = changeVal;
 
@@ -960,7 +974,10 @@ function updateSingleMetricStats(data, metric) {
     const statCount = document.getElementById('stat-count');
     if (statCount) statCount.textContent = countFormatted;
     const statAge = document.getElementById('stat-age');
-    if (statAge) statAge.textContent = ageFormatted;
+    if (statAge) {
+        statAge.textContent = ageFormatted;
+        statAge.dataset.readingTimestamp = data.latest_t || '';
+    }
     const statChange = document.getElementById('stat-change');
     if (statChange) statChange.textContent = changeFormatted;
     const statChangeFootnote = document.getElementById('stat-change-footnote');

@@ -1014,6 +1014,10 @@ body {
     grid-column: 1 / -1;
 }
 
+.subvalue-full .subvalue-number {
+    white-space: normal;
+}
+
 .subvalue-col {
     background: var(--surface-subtle);
     border: 1px solid var(--border-subtle);
