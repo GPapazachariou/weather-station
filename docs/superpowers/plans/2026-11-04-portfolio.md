@@ -33,7 +33,7 @@ Files: Dockerfile.verify, .dockerignore, scripts/verify_recovery.py, docs/reliab
 - [x] Final Docker image: 362 tests passed, Ruff passed, real-process recovery reconciled 12/12 readings with no missing or duplicate rows. Python 3.12.16 / SQLite 3.46.1; report committed.
 
 ## Task 3: Review and integration
-- [ ] Obtain independent sol-loop review; fix substantive findings and rerun Docker checks.
+- [x] Independent sol-loop review approved after two rounds. S1 fixed with failing-then-passing idle-peer regression; final Docker image passes 363 tests, Ruff and recovery. Production Python 3.11 recovery also passes.
 - [ ] File, review and merge the first PR under full-send authority, without bypassing required branch protection.
 - [ ] Stop after merge; do not start another category.
 
@@ -44,3 +44,5 @@ Files: Dockerfile.verify, .dockerignore, scripts/verify_recovery.py, docs/reliab
 - Evidence: 362 tests passed in the final Docker image; ten targeted reliability tests pass. The baseline Docker image reproduces the shutdown CancelledError. No GitHub workflow changes or CI runs were used for this proof.
 
 - Review round 1 (gpt-6.1-sol, high): S1 blocker confirmed. Python 3.12 server context-manager exit waited for idle connections before the cancellation deadline. Added idle-peer regression (observed timeout), removed the context manager and moved wait_closed after handler cleanup. All 363 Docker tests and Ruff pass; recovery script passes again. No findings declined. Review-only usage was not returned.
+
+- Review round 2 (gpt-6.1-sol, high): APPROVE; S1 resolved. Reviewer independently ran all 11 reliability tests in Docker. No open or declined findings. Diff grew from 699 insertions/30 deletions to 737 insertions/31 deletions to cover the confirmed idle-peer shutdown defect. Review usage not returned.
