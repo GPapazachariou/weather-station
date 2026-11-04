@@ -61,12 +61,25 @@ async def init_database():
         await db.execute("""
             CREATE TABLE IF NOT EXISTS readings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                station_id TEXT,
-                timestamp TEXT,
-                temperature REAL,
-                humidity REAL,
-                windspeed REAL
+                station_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                timestamp TEXT NOT NULL,
+                temperature REAL NOT NULL,
+                humidity REAL NOT NULL,
+                windspeed REAL NOT NULL,
+                UNIQUE(station_id, seq)
             )
+        """)
+        # If readings table already existed without seq column, migrate it
+        cursor = await db.execute("PRAGMA table_info(readings)")
+        columns = [row[1] for row in await cursor.fetchall()]
+        if "seq" not in columns:
+            await db.execute("ALTER TABLE readings ADD COLUMN seq INTEGER")
+
+        # Compound unique index for station_id and seq to guarantee idempotent writes
+        await db.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_readings_station_seq
+            ON readings(station_id, seq)
         """)
         # Compound index for time-series filtering and ordering (station_id + timestamp DESC)
         await db.execute("""
@@ -121,15 +134,16 @@ async def db_writer_task():
                     continue
                 
                 try:
-                    # Insert batch in a single transaction (all-or-nothing)
-                    await db_connection.executemany(
+                    # Insert batch using INSERT OR IGNORE for idempotency
+                    cursor = await db_connection.executemany(
                         """
-                        INSERT INTO readings (station_id, timestamp, temperature, humidity, windspeed)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT OR IGNORE INTO readings (station_id, seq, timestamp, temperature, humidity, windspeed)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         """,
                         [
                             (
                                 reading["station_id"],
+                                reading["seq"],
                                 normalize_utc_timestamp(reading["timestamp"]),
                                 reading["temperature"],
                                 reading["humidity"],
@@ -140,9 +154,11 @@ async def db_writer_task():
                     )
                     await db_connection.commit()
                     
-                    # Signal success with number of inserted records
+                    inserted = cursor.rowcount
+                    duplicates = len(batch) - inserted
+                    # Signal success with inserted and duplicate counts
                     if not result_future.done():
-                        result_future.set_result(len(batch))
+                        result_future.set_result({"inserted": inserted, "duplicates": duplicates})
                     
                 except Exception as e:
                     # Signal failure only if not already done
@@ -167,14 +183,15 @@ async def db_writer_task():
                 continue
             
             try:
-                await db_connection.executemany(
+                cursor = await db_connection.executemany(
                     """
-                    INSERT INTO readings (station_id, timestamp, temperature, humidity, windspeed)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT OR IGNORE INTO readings (station_id, seq, timestamp, temperature, humidity, windspeed)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
                             reading["station_id"],
+                            reading["seq"],
                             normalize_utc_timestamp(reading["timestamp"]),
                             reading["temperature"],
                             reading["humidity"],
@@ -184,8 +201,10 @@ async def db_writer_task():
                     ],
                 )
                 await db_connection.commit()
+                inserted = cursor.rowcount
+                duplicates = len(batch) - inserted
                 if not result_future.done():
-                    result_future.set_result(len(batch))
+                    result_future.set_result({"inserted": inserted, "duplicates": duplicates})
             except Exception as e:
                 if not result_future.done():
                     result_future.set_exception(e)
@@ -202,10 +221,10 @@ async def enqueue_batch(batch):
     Enqueue a validated batch for writing.
     Creates a future using the current event loop to handle cancellation properly.
     Enforces backpressure queue put timeout and writer ACK timeout.
-    Returns the number of inserted readings.
+    Returns a dict with 'inserted' and 'duplicates' counts.
     """
     if not batch:
-        return 0
+        return {"inserted": 0, "duplicates": 0}
     
     # Create a future using the current running loop
     loop = asyncio.get_running_loop()
@@ -237,7 +256,7 @@ async def handle_consumer_request(req, addr):
     """
     Handle a consumer read-only request.
     
-    req: dict with "request" key and optional parameters (station_id, limit, etc.)
+    req: dict with "request" key and optional parameters (station_id, limit, seq, etc.)
     addr: client address for logging
     
     Returns: dict response with "status" and data fields (or error).
@@ -268,12 +287,12 @@ async def handle_consumer_request(req, addr):
                 
                 if station_id:
                     cursor = await db.execute(
-                        "SELECT station_id, timestamp, temperature, humidity, windspeed FROM readings WHERE station_id = ? ORDER BY id DESC LIMIT 1",
+                        "SELECT station_id, seq, timestamp, temperature, humidity, windspeed FROM readings WHERE station_id = ? ORDER BY id DESC LIMIT 1",
                         (station_id,)
                     )
                 else:
                     cursor = await db.execute(
-                        "SELECT station_id, timestamp, temperature, humidity, windspeed FROM readings ORDER BY id DESC LIMIT 1"
+                        "SELECT station_id, seq, timestamp, temperature, humidity, windspeed FROM readings ORDER BY id DESC LIMIT 1"
                     )
                 
                 row = await cursor.fetchone()
@@ -288,7 +307,7 @@ async def handle_consumer_request(req, addr):
             limit = req.get("limit", 50)
             
             # Clamp limit to 1..500
-            if not isinstance(limit, int) or limit < 1:
+            if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
                 limit = 50
             limit = min(limit, 500)
             
@@ -298,12 +317,12 @@ async def handle_consumer_request(req, addr):
                 
                 if station_id:
                     cursor = await db.execute(
-                        "SELECT station_id, timestamp, temperature, humidity, windspeed FROM readings WHERE station_id = ? ORDER BY id DESC LIMIT ?",
+                        "SELECT station_id, seq, timestamp, temperature, humidity, windspeed FROM readings WHERE station_id = ? ORDER BY id DESC LIMIT ?",
                         (station_id, limit)
                     )
                 else:
                     cursor = await db.execute(
-                        "SELECT station_id, timestamp, temperature, humidity, windspeed FROM readings ORDER BY id DESC LIMIT ?",
+                        "SELECT station_id, seq, timestamp, temperature, humidity, windspeed FROM readings ORDER BY id DESC LIMIT ?",
                         (limit,)
                     )
                 
@@ -312,6 +331,74 @@ async def handle_consumer_request(req, addr):
             
             return {"status": "ok", "readings": readings}
         
+        elif request_type == "latest_seq":
+            # Supported: {"request":"latest_seq"} or {"request":"latest_seq","station_id":"..."}
+            # Return: {"status":"ok","latest_seq":N} (and station_id if requested)
+            station_id = req.get("station_id")
+            async with aiosqlite.connect(DB_FILE) as db:
+                await db.execute("PRAGMA busy_timeout=3000;")
+                if station_id:
+                    cursor = await db.execute(
+                        "SELECT MAX(seq) FROM readings WHERE station_id = ?",
+                        (station_id,)
+                    )
+                else:
+                    cursor = await db.execute("SELECT MAX(seq) FROM readings")
+                row = await cursor.fetchone()
+                latest_seq = row[0] if (row and row[0] is not None) else None
+            
+            res = {"status": "ok", "latest_seq": latest_seq}
+            if station_id:
+                res["station_id"] = station_id
+            return res
+
+        elif request_type == "since":
+            # Supported: {"request":"since","seq":100} or {"request":"since","station_id":"...","seq":100,"limit":50}
+            # Return: {"status":"ok","readings":[...],"count":N}
+            station_id = req.get("station_id")
+            since_seq = req.get("seq")
+            if since_seq is None:
+                return {"status": "error", "reason": "missing seq"}
+            if not isinstance(since_seq, int) or isinstance(since_seq, bool) or since_seq < 0:
+                return {"status": "error", "reason": "invalid seq (expected non-negative integer)"}
+
+            limit = req.get("limit", 100)
+            if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+                limit = 100
+            limit = min(limit, 500)
+
+            async with aiosqlite.connect(DB_FILE) as db:
+                await db.execute("PRAGMA busy_timeout=3000;")
+                db.row_factory = aiosqlite.Row
+
+                if station_id:
+                    cursor = await db.execute(
+                        """
+                        SELECT station_id, seq, timestamp, temperature, humidity, windspeed
+                        FROM readings
+                        WHERE station_id = ? AND seq > ?
+                        ORDER BY seq ASC
+                        LIMIT ?
+                        """,
+                        (station_id, since_seq, limit)
+                    )
+                else:
+                    cursor = await db.execute(
+                        """
+                        SELECT station_id, seq, timestamp, temperature, humidity, windspeed
+                        FROM readings
+                        WHERE seq > ?
+                        ORDER BY seq ASC
+                        LIMIT ?
+                        """,
+                        (since_seq, limit)
+                    )
+
+                rows = await cursor.fetchall()
+                readings = [dict(row) for row in rows]
+
+            return {"status": "ok", "readings": readings, "count": len(readings)}
+
         else:
             # Unknown request type
             request_type_str = str(request_type) if request_type is not None else "null"
@@ -374,14 +461,16 @@ async def handle_client(reader, writer):
                     validate_batch(batch)
                     
                     # All-or-nothing: enqueue batch for sequential writing
-                    inserted = await enqueue_batch(batch)
+                    write_result = await enqueue_batch(batch)
+                    inserted = write_result["inserted"]
+                    duplicates = write_result["duplicates"]
                     
-                    # Send success response
-                    response = {"status": "ok", "inserted": inserted}
+                    # Send success response with inserted and duplicates counts
+                    response = {"status": "ok", "inserted": inserted, "duplicates": duplicates}
                     writer.write((json.dumps(response) + "\n").encode('utf-8'))
                     await writer.drain()
                     
-                    print(f"Processed batch from {addr}: {inserted} readings inserted")
+                    print(f"Processed batch from {addr}: {inserted} readings inserted, {duplicates} duplicates ignored")
                 
             except asyncio.CancelledError:
                 # Client handler was cancelled (connection lost, etc.)

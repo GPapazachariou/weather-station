@@ -94,7 +94,7 @@ def validate_batch(batch: list) -> None:
         raise ValueError("batch size exceeds limit")
     
     # Required fields for each reading
-    required_fields = ["station_id", "timestamp", "temperature", "humidity", "windspeed"]
+    required_fields = ["station_id", "seq", "timestamp", "temperature", "humidity", "windspeed"]
     
     # Validate each item in the batch
     for index, item in enumerate(batch):
@@ -116,6 +116,10 @@ def validate_batch(batch: list) -> None:
             (c.isascii() and c.isalnum()) or c in "-_" for c in item["station_id"]
         ):
             raise ValueError(f"invalid station_id format at index {index}")
+        
+        # Rule 5b: seq must be a non-negative integer
+        if not isinstance(item["seq"], int) or isinstance(item["seq"], bool) or item["seq"] < 0:
+            raise ValueError(f"invalid seq at index {index} (expected non-negative integer)")
         
         # Rule 6: timestamp must be valid ISO 8601 format
         try:

@@ -87,6 +87,7 @@ class TestDatabaseInit:
         # Verify compound indexes exist
         cursor.execute("SELECT name FROM sqlite_master WHERE type='index'")
         indexes = {row[0] for row in cursor.fetchall()}
+        assert "idx_readings_station_seq" in indexes
         assert "idx_readings_station_ts" in indexes
         assert "idx_readings_station_id_desc" in indexes
         conn.close()
@@ -104,11 +105,11 @@ class TestDatabaseInit:
 
 
 class TestWriterQueue:
-    """Tests for single-writer queue ingestion and concurrency."""
+    """Tests for single-writer queue ingestion, idempotency, and concurrency."""
 
     async def test_enqueue_empty_batch(self):
-        """Enqueueing an empty batch should return 0 immediately without queuing."""
-        assert await app.enqueue_batch([]) == 0
+        """Enqueueing an empty batch should return 0 inserted immediately without queuing."""
+        assert await app.enqueue_batch([]) == {"inserted": 0, "duplicates": 0}
 
     async def test_writer_task_and_enqueue_batch(self, server_test_db: Path):
         """Writer task should consume batch from queue and commit records to SQLite."""
@@ -120,6 +121,7 @@ class TestWriterQueue:
         batch = [
             {
                 "station_id": "STN-TEST",
+                "seq": 1,
                 "timestamp": "2026-10-02T01:00:00Z",
                 "temperature": 22.0,
                 "humidity": 50.0,
@@ -127,6 +129,7 @@ class TestWriterQueue:
             },
             {
                 "station_id": "STN-TEST",
+                "seq": 2,
                 "timestamp": "2026-10-02T01:01:00Z",
                 "temperature": 22.5,
                 "humidity": 52.0,
@@ -135,8 +138,8 @@ class TestWriterQueue:
         ]
 
         try:
-            inserted = await app.enqueue_batch(batch)
-            assert inserted == 2
+            res = await app.enqueue_batch(batch)
+            assert res == {"inserted": 2, "duplicates": 0}
         finally:
             # Terminate writer gracefully via sentinel
             await app.write_queue.put(app._WRITER_SENTINEL)
@@ -147,6 +150,108 @@ class TestWriterQueue:
             cursor = await db.execute("SELECT COUNT(*) FROM readings WHERE station_id='STN-TEST'")
             count = (await cursor.fetchone())[0]
             assert count == 2
+
+    async def test_idempotent_ingest_duplicate_batch_ignored(self, server_test_db: Path):
+        """Re-sending the same batch twice results in duplicates: N and zero duplicate rows in DB."""
+        await app.init_database()
+        app.write_queue = asyncio.Queue()
+        writer = asyncio.create_task(app.db_writer_task())
+
+        batch = [
+            {
+                "station_id": "DEDUP-STN",
+                "seq": 10,
+                "timestamp": "2026-10-02T01:00:00Z",
+                "temperature": 20.0,
+                "humidity": 50.0,
+                "windspeed": 5.0,
+            },
+            {
+                "station_id": "DEDUP-STN",
+                "seq": 11,
+                "timestamp": "2026-10-02T01:01:00Z",
+                "temperature": 20.5,
+                "humidity": 51.0,
+                "windspeed": 5.5,
+            },
+        ]
+
+        try:
+            # First send: all inserted
+            res1 = await app.enqueue_batch(batch)
+            assert res1 == {"inserted": 2, "duplicates": 0}
+
+            # Second send (retry / replay): duplicates ignored
+            res2 = await app.enqueue_batch(batch)
+            assert res2 == {"inserted": 0, "duplicates": 2}
+        finally:
+            await app.write_queue.put(app._WRITER_SENTINEL)
+            await writer
+
+        # Verify DB has exactly 2 rows, not 4
+        async with aiosqlite.connect(str(server_test_db)) as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM readings WHERE station_id = 'DEDUP-STN'")
+            count = (await cursor.fetchone())[0]
+            assert count == 2
+
+    async def test_idempotent_ingest_partial_duplicate_batch(self, server_test_db: Path):
+        """A batch containing some already-inserted readings only inserts the new ones."""
+        await app.init_database()
+        app.write_queue = asyncio.Queue()
+        writer = asyncio.create_task(app.db_writer_task())
+
+        batch_1 = [
+            {
+                "station_id": "PARTIAL-STN",
+                "seq": 1,
+                "timestamp": "2026-10-02T01:00:00Z",
+                "temperature": 20.0,
+                "humidity": 50.0,
+                "windspeed": 5.0,
+            },
+            {
+                "station_id": "PARTIAL-STN",
+                "seq": 2,
+                "timestamp": "2026-10-02T01:01:00Z",
+                "temperature": 20.5,
+                "humidity": 51.0,
+                "windspeed": 5.5,
+            },
+        ]
+
+        batch_2 = [
+            {
+                "station_id": "PARTIAL-STN",
+                "seq": 2,  # Duplicate
+                "timestamp": "2026-10-02T01:01:00Z",
+                "temperature": 20.5,
+                "humidity": 51.0,
+                "windspeed": 5.5,
+            },
+            {
+                "station_id": "PARTIAL-STN",
+                "seq": 3,  # New
+                "timestamp": "2026-10-02T01:02:00Z",
+                "temperature": 21.0,
+                "humidity": 52.0,
+                "windspeed": 6.0,
+            },
+        ]
+
+        try:
+            res1 = await app.enqueue_batch(batch_1)
+            assert res1 == {"inserted": 2, "duplicates": 0}
+
+            res2 = await app.enqueue_batch(batch_2)
+            assert res2 == {"inserted": 1, "duplicates": 1}
+        finally:
+            await app.write_queue.put(app._WRITER_SENTINEL)
+            await writer
+
+        async with aiosqlite.connect(str(server_test_db)) as db:
+            cursor = await db.execute("SELECT seq FROM readings WHERE station_id = 'PARTIAL-STN' ORDER BY seq ASC")
+            seqs = [row[0] for row in await cursor.fetchall()]
+            assert seqs == [1, 2, 3]
 
     async def test_concurrent_enqueue_batches_no_locks(self, server_test_db: Path):
         """Multiple concurrent producers enqueuing batches should complete cleanly."""
@@ -159,6 +264,7 @@ class TestWriterQueue:
             [
                 {
                     "station_id": f"STN-PARALLEL-{i}",
+                    "seq": j,
                     "timestamp": f"2026-10-02T01:0{j}:00Z",
                     "temperature": 20.0 + j,
                     "humidity": 50.0,
@@ -172,7 +278,7 @@ class TestWriterQueue:
         try:
             # Enqueue 10 batches concurrently
             results = await asyncio.gather(*[app.enqueue_batch(b) for b in batches])
-            assert results == [5] * 10
+            assert results == [{"inserted": 5, "duplicates": 0}] * 10
         finally:
             # Terminate writer gracefully
             await app.write_queue.put(app._WRITER_SENTINEL)
@@ -195,6 +301,7 @@ class TestWriterQueue:
             # 1. 'Z' suffix (1 AM UTC)
             {
                 "station_id": "NORM-STN",
+                "seq": 1,
                 "timestamp": "2026-10-02T01:00:00Z",
                 "temperature": 20.0,
                 "humidity": 50.0,
@@ -203,6 +310,7 @@ class TestWriterQueue:
             # 2. +03:00 timezone offset (4 AM +03:00 == 1 AM UTC)
             {
                 "station_id": "NORM-STN",
+                "seq": 2,
                 "timestamp": "2026-10-02T04:00:00+03:00",
                 "temperature": 21.0,
                 "humidity": 55.0,
@@ -211,6 +319,7 @@ class TestWriterQueue:
             # 3. -05:00 timezone offset (1 AM -05:00 == 6 AM UTC)
             {
                 "station_id": "NORM-STN",
+                "seq": 3,
                 "timestamp": "2026-10-02T01:00:00-05:00",
                 "temperature": 22.0,
                 "humidity": 60.0,
@@ -219,6 +328,7 @@ class TestWriterQueue:
             # 4. Naive timestamp (assumed UTC)
             {
                 "station_id": "NORM-STN",
+                "seq": 4,
                 "timestamp": "2026-10-02T03:00:00",
                 "temperature": 23.0,
                 "humidity": 65.0,
@@ -227,8 +337,8 @@ class TestWriterQueue:
         ]
 
         try:
-            inserted = await app.enqueue_batch(batch)
-            assert inserted == 4
+            res = await app.enqueue_batch(batch)
+            assert res == {"inserted": 4, "duplicates": 0}
         finally:
             await app.write_queue.put(app._WRITER_SENTINEL)
             await writer
@@ -288,11 +398,11 @@ class TestConsumerHandlers:
         async with aiosqlite.connect(str(server_test_db)) as db:
             await db.execute(
                 """
-                INSERT INTO readings (station_id, timestamp, temperature, humidity, windspeed)
+                INSERT INTO readings (station_id, seq, timestamp, temperature, humidity, windspeed)
                 VALUES
-                    ('STN-A', '2026-10-02T01:00:00Z', 18.0, 45.0, 5.0),
-                    ('STN-A', '2026-10-02T01:10:00Z', 19.5, 48.0, 6.0),
-                    ('STN-B', '2026-10-02T01:05:00Z', 24.0, 60.0, 8.0)
+                    ('STN-A', 1, '2026-10-02T01:00:00Z', 18.0, 45.0, 5.0),
+                    ('STN-A', 2, '2026-10-02T01:10:00Z', 19.5, 48.0, 6.0),
+                    ('STN-B', 1, '2026-10-02T01:05:00Z', 24.0, 60.0, 8.0)
                 """
             )
             await db.commit()
@@ -313,6 +423,7 @@ class TestConsumerHandlers:
         assert reading is not None
         assert reading["station_id"] == "STN-B"  # Last inserted id
         assert reading["temperature"] == 24.0
+        assert reading["seq"] == 1
 
     async def test_consumer_latest_per_station(self):
         """{"request": "latest", "station_id": "STN-A"} returns newest reading for STN-A."""
@@ -323,6 +434,7 @@ class TestConsumerHandlers:
         assert reading["station_id"] == "STN-A"
         assert reading["temperature"] == 19.5
         assert reading["timestamp"] == "2026-10-02T01:10:00Z"
+        assert reading["seq"] == 2
 
     async def test_consumer_latest_nonexistent_station(self):
         """{"request": "latest", "station_id": "NONEXISTENT"} returns reading: null."""
@@ -339,6 +451,7 @@ class TestConsumerHandlers:
         readings = resp["readings"]
         assert len(readings) == 2
         assert readings[0]["station_id"] == "STN-B"
+        assert "seq" in readings[0]
 
     async def test_consumer_recent_per_station(self):
         """{"request": "recent", "station_id": "STN-A", "limit": 10} returns readings for STN-A."""
@@ -348,14 +461,69 @@ class TestConsumerHandlers:
         assert len(resp["readings"]) == 2
         for r in resp["readings"]:
             assert r["station_id"] == "STN-A"
+            assert "seq" in r
 
-    @pytest.mark.parametrize("invalid_limit", [-5, 0, "not_an_int", None])
+    async def test_consumer_latest_seq(self):
+        """{"request": "latest_seq", "station_id": "STN-A"} returns latest seq for STN-A."""
+        req = {"request": "latest_seq", "station_id": "STN-A"}
+        resp = await app.handle_consumer_request(req, ("127.0.0.1", 50000))
+        assert resp["status"] == "ok"
+        assert resp["station_id"] == "STN-A"
+        assert resp["latest_seq"] == 2
+
+    async def test_consumer_latest_seq_global(self):
+        """{"request": "latest_seq"} returns max seq across all stations."""
+        req = {"request": "latest_seq"}
+        resp = await app.handle_consumer_request(req, ("127.0.0.1", 50000))
+        assert resp["status"] == "ok"
+        assert resp["latest_seq"] == 2
+
+    async def test_consumer_latest_seq_nonexistent_station(self):
+        """{"request": "latest_seq", "station_id": "NO-SUCH-STN"} returns null."""
+        req = {"request": "latest_seq", "station_id": "NO-SUCH-STN"}
+        resp = await app.handle_consumer_request(req, ("127.0.0.1", 50000))
+        assert resp["status"] == "ok"
+        assert resp["station_id"] == "NO-SUCH-STN"
+        assert resp["latest_seq"] is None
+
+    async def test_consumer_since_replay(self):
+        """{"request": "since", "station_id": "STN-A", "seq": 1} returns readings with seq > 1."""
+        req = {"request": "since", "station_id": "STN-A", "seq": 1}
+        resp = await app.handle_consumer_request(req, ("127.0.0.1", 50000))
+        assert resp["status"] == "ok"
+        assert resp["count"] == 1
+        assert len(resp["readings"]) == 1
+        assert resp["readings"][0]["seq"] == 2
+        assert resp["readings"][0]["station_id"] == "STN-A"
+
+    async def test_consumer_since_missing_seq(self):
+        """{"request": "since"} without seq returns error."""
+        req = {"request": "since", "station_id": "STN-A"}
+        resp = await app.handle_consumer_request(req, ("127.0.0.1", 50000))
+        assert resp["status"] == "error"
+        assert "missing seq" in resp["reason"]
+
+    @pytest.mark.parametrize("bad_seq", [-1, "zero", None, True])
+    async def test_consumer_since_invalid_seq(self, bad_seq):
+        """{"request": "since", "seq": <invalid>} returns error."""
+        req = {"request": "since", "station_id": "STN-A", "seq": bad_seq}
+        resp = await app.handle_consumer_request(req, ("127.0.0.1", 50000))
+        assert resp["status"] == "error"
+
+    @pytest.mark.parametrize("invalid_limit", [-5, 0, "not_an_int", None, True, False])
     async def test_consumer_recent_invalid_limit_defaults_to_50(self, invalid_limit):
-        """Invalid limit parameter should safely fall back to default limit of 50."""
+        """Invalid limit parameter (including bool) should safely fall back to default limit of 50."""
         req = {"request": "recent", "limit": invalid_limit}
         resp = await app.handle_consumer_request(req, ("127.0.0.1", 50000))
         assert resp["status"] == "ok"
         assert len(resp["readings"]) == 3  # Returns all 3 available
+
+    async def test_consumer_since_boolean_limit_defaults_to_100(self):
+        """Boolean limit parameter in since query falls back to default limit of 100."""
+        req = {"request": "since", "station_id": "STN-A", "seq": 0, "limit": True}
+        resp = await app.handle_consumer_request(req, ("127.0.0.1", 50000))
+        assert resp["status"] == "ok"
+        assert len(resp["readings"]) == 2
 
     async def test_consumer_recent_limit_clamped_to_500(self):
         """Limit exceeding 500 is clamped to 500."""
@@ -405,6 +573,7 @@ class TestServerTcpEndToEnd:
             batch = [
                 {
                     "station_id": "TCP-STN",
+                    "seq": 1,
                     "timestamp": "2026-10-02T01:30:00Z",
                     "temperature": 21.0,
                     "humidity": 45.0,
@@ -416,7 +585,15 @@ class TestServerTcpEndToEnd:
 
             resp_line = await reader.readline()
             resp = json.loads(resp_line.decode())
-            assert resp == {"status": "ok", "inserted": 1}
+            assert resp == {"status": "ok", "inserted": 1, "duplicates": 0}
+
+            # 1b. Resend same batch via TCP -> idempotent deduplication
+            socket_writer.write((json.dumps(batch) + "\n").encode())
+            await socket_writer.drain()
+
+            resp_line = await reader.readline()
+            resp = json.loads(resp_line.decode())
+            assert resp == {"status": "ok", "inserted": 0, "duplicates": 1}
 
             # 2. Query consumer stations via TCP
             socket_writer.write((json.dumps({"request": "stations"}) + "\n").encode())
@@ -487,6 +664,7 @@ class TestBackpressureAndQueueBounds:
             batch = [
                 {
                     "station_id": "BLOCKED",
+                    "seq": 1,
                     "timestamp": "2026-10-02T01:00:00Z",
                     "temperature": 20.0,
                     "humidity": 50.0,
@@ -511,6 +689,7 @@ class TestBackpressureAndQueueBounds:
             batch = [
                 {
                     "station_id": "HANGING",
+                    "seq": 1,
                     "timestamp": "2026-10-02T01:00:00Z",
                     "temperature": 20.0,
                     "humidity": 50.0,
@@ -544,7 +723,7 @@ class TestBackpressureAndQueueBounds:
 
             # Fill queue to saturation
             dummy_future = asyncio.get_running_loop().create_future()
-            await app.write_queue.put(([{"station_id": "DUMMY"}], dummy_future))
+            await app.write_queue.put(([{"station_id": "DUMMY", "seq": 1}], dummy_future))
 
             tcp_server = await asyncio.start_server(app.handle_client, "127.0.0.1", 0)
             port = tcp_server.sockets[0].getsockname()[1]
@@ -554,6 +733,7 @@ class TestBackpressureAndQueueBounds:
                 batch = [
                     {
                         "station_id": "STN-BP",
+                        "seq": 1,
                         "timestamp": "2026-10-02T01:00:00Z",
                         "temperature": 22.0,
                         "humidity": 50.0,
@@ -607,7 +787,7 @@ class TestBackpressureAndQueueBounds:
                         batch, fut = item
                         await asyncio.sleep(0.5)
                         if not fut.cancelled() and not fut.done():
-                            fut.set_result(len(batch))
+                            fut.set_result({"inserted": len(batch), "duplicates": 0})
 
             writer = asyncio.create_task(slow_writer_task())
 
@@ -621,9 +801,9 @@ class TestBackpressureAndQueueBounds:
                 r3, w3 = await asyncio.open_connection("127.0.0.1", port)
 
                 try:
-                    batch_1 = [{"station_id": "SLOW-1", "timestamp": "2026-10-02T01:00:00Z", "temperature": 20.0, "humidity": 50.0, "windspeed": 5.0}]
-                    batch_2 = [{"station_id": "SLOW-2", "timestamp": "2026-10-02T01:01:00Z", "temperature": 21.0, "humidity": 51.0, "windspeed": 6.0}]
-                    batch_3 = [{"station_id": "SLOW-3", "timestamp": "2026-10-02T01:02:00Z", "temperature": 22.0, "humidity": 52.0, "windspeed": 7.0}]
+                    batch_1 = [{"station_id": "SLOW-1", "seq": 1, "timestamp": "2026-10-02T01:00:00Z", "temperature": 20.0, "humidity": 50.0, "windspeed": 5.0}]
+                    batch_2 = [{"station_id": "SLOW-2", "seq": 1, "timestamp": "2026-10-02T01:01:00Z", "temperature": 21.0, "humidity": 51.0, "windspeed": 6.0}]
+                    batch_3 = [{"station_id": "SLOW-3", "seq": 1, "timestamp": "2026-10-02T01:02:00Z", "temperature": 22.0, "humidity": 52.0, "windspeed": 7.0}]
 
                     # Client 1 sends batch 1 (writer starts processing and sleeps 0.5s)
                     w1.write((json.dumps(batch_1) + "\n").encode())

@@ -30,6 +30,7 @@ def make_valid_reading(**kwargs):
     """Helper to create a valid reading dict with optional overrides."""
     base = {
         "station_id": "STATION-001",
+        "seq": 0,
         "timestamp": "2026-10-02T01:30:00Z",
         "temperature": 21.5,
         "humidity": 55.0,
@@ -346,12 +347,25 @@ class TestBatchValidation:
 
     @pytest.mark.parametrize(
         "missing_key",
-        ["station_id", "timestamp", "temperature", "humidity", "windspeed"],
+        ["station_id", "seq", "timestamp", "temperature", "humidity", "windspeed"],
     )
     def test_missing_required_fields(self, missing_key):
         reading = make_valid_reading()
         del reading[missing_key]
         with pytest.raises(ValueError, match=f"missing {missing_key} at index 0"):
+            validate_batch([reading])
+
+    @pytest.mark.parametrize("valid_seq", [0, 1, 42, 1000000])
+    def test_valid_seq_accepted(self, valid_seq):
+        """Non-negative integer seq numbers must pass validation."""
+        reading = make_valid_reading(seq=valid_seq)
+        assert validate_batch([reading]) is None
+
+    @pytest.mark.parametrize("bad_seq", [-1, -100, 1.5, "0", True, False, None, [1]])
+    def test_invalid_seq_rejected(self, bad_seq):
+        """Negative, non-integer, bool, or non-finite seq numbers must be rejected."""
+        reading = make_valid_reading(seq=bad_seq)
+        with pytest.raises(ValueError, match="invalid seq at index 0"):
             validate_batch([reading])
 
     @pytest.mark.parametrize(
