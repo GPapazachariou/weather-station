@@ -35,7 +35,7 @@ VALID_LIMITS = {
     "500": 500,
 }
 # Valid metrics - we'll detect actual column name at runtime
-VALID_METRICS = {"temperature", "humidity", "windspeed"}
+VALID_METRICS = {"temperature", "humidity", "windspeed", "wind_speed"}
 
 # Cache for detected wind column name
 _wind_column_cache = None
