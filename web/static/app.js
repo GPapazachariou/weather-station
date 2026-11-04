@@ -1,5 +1,19 @@
-let chart = null;
+let chart = null; // Legacy single-chart handle for backward compatibility
+const charts = {
+    temperature: null,
+    humidity: null,
+    windspeed: null,
+    single: null
+};
+
+// Full raw telemetry arrays
 let currentRawPoints = [];
+let multiSeries = {
+    temperature: [],
+    humidity: [],
+    windspeed: []
+};
+
 let eventSource = null;
 let reconnectTimer = null;
 let reconnectDelay = 1000;
@@ -10,6 +24,43 @@ let lastUpdatedTimer = null;
 let lastReceivedId = null;
 let isRefreshing = false; // In-flight request guard
 let pendingRefresh = false; // Coalesce rapid changes during active refresh
+let statsRefreshTimer = null; // Debounce/coalesce stats refresh on live updates (S5)
+
+const METRIC_CONFIGS = {
+    temperature: {
+        id: 'temperature',
+        title: 'Temperature',
+        unit: '°C',
+        canvasId: 'chart-temperature',
+        color: '#ef4444',
+        rawBorder: '#f87171',
+        rawBg: 'rgba(239, 68, 68, 0.12)',
+        rollingBorder: '#991b1b',
+        dotClass: 'temp-dot'
+    },
+    humidity: {
+        id: 'humidity',
+        title: 'Humidity',
+        unit: '%',
+        canvasId: 'chart-humidity',
+        color: '#0284c7',
+        rawBorder: '#38bdf8',
+        rawBg: 'rgba(2, 132, 199, 0.12)',
+        rollingBorder: '#075985',
+        dotClass: 'hum-dot'
+    },
+    windspeed: {
+        id: 'windspeed',
+        title: 'Wind Speed',
+        unit: 'm/s',
+        canvasId: 'chart-windspeed',
+        color: '#059669',
+        rawBorder: '#34d399',
+        rawBg: 'rgba(5, 150, 105, 0.12)',
+        rollingBorder: '#064e3b',
+        dotClass: 'wind-dot'
+    }
+};
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', async () => {
@@ -25,9 +76,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('metric-select').addEventListener('change', onMetricChange);
     document.getElementById('range-select').addEventListener('change', onRangeChange);
     document.getElementById('limit-select').addEventListener('change', refreshAll);
-    document.getElementById('toggleRaw').addEventListener('change', refreshAll);
-    document.getElementById('toggleRolling').addEventListener('change', refreshAll);
-    document.getElementById('rollingWindow').addEventListener('change', refreshAll);
+    document.getElementById('toggleRaw').addEventListener('change', onToggleChange);
+    document.getElementById('toggleRolling').addEventListener('change', onToggleChange);
+    document.getElementById('rollingWindow').addEventListener('change', onToggleChange);
 
     // Initial data fetch and start live stream
     await refreshAll();
@@ -59,6 +110,23 @@ async function onStationChange() {
  */
 async function onMetricChange() {
     await refreshAll();
+}
+
+/**
+ * Handle toggle or rolling window changes without full network fetch if data exists
+ */
+function onToggleChange() {
+    const metricMode = document.getElementById('metric-select').value;
+    const range = document.getElementById('range-select').value;
+    const rawEnabled = document.getElementById('toggleRaw').checked;
+    const rollingEnabled = document.getElementById('toggleRolling').checked;
+    const windowSize = parseInt(document.getElementById('rollingWindow').value, 10) || 10;
+
+    if (metricMode === 'all') {
+        renderAlignedPanels(multiSeries, rawEnabled, rollingEnabled, windowSize, range);
+    } else {
+        renderSingleChart(metricMode, currentRawPoints, rawEnabled, rollingEnabled, windowSize, range);
+    }
 }
 
 /**
@@ -153,7 +221,6 @@ function initLiveStream() {
         eventSource.onerror = (err) => {
             console.warn('[SSE] Connection error/closed:', err);
             setLiveStatus('reconnecting');
-            // Explicitly close errored EventSource so backoff schedule handles reconnection cleanly
             closeLiveStream();
             scheduleReconnect();
         };
@@ -192,7 +259,32 @@ function scheduleReconnect() {
 }
 
 /**
- * Handle new live reading received from SSE stream
+ * Schedule a debounced/coalesced fetch of full-dataset statistics on live updates (S5)
+ */
+function scheduleCoalescedStatsRefresh() {
+    if (statsRefreshTimer) return;
+    statsRefreshTimer = setTimeout(async () => {
+        statsRefreshTimer = null;
+        try {
+            const station = document.getElementById('station-select').value;
+            const metric = document.getElementById('metric-select').value;
+            const range = document.getElementById('range-select').value;
+            let q = `?station_id=${encodeURIComponent(station)}&metric=${encodeURIComponent(metric)}`;
+            if (range === 'limit') {
+                const limit = document.getElementById('limit-select').value || 50;
+                q += `&limit=${encodeURIComponent(limit)}`;
+            } else {
+                q += `&range=${encodeURIComponent(range)}`;
+            }
+            await fetchStats(q);
+        } catch (e) {
+            console.warn('[StatsRefresh] Coalesced refresh error:', e);
+        }
+    }, 1000);
+}
+
+/**
+ * Handle new live reading received from SSE stream (S2, S3, S5)
  */
 function handleLiveReading(reading) {
     const station = document.getElementById('station-select').value;
@@ -203,70 +295,64 @@ function handleLiveReading(reading) {
     lastUpdatedTime = new Date();
     updateLastUpdatedDisplay();
 
-    const metric = document.getElementById('metric-select').value;
-    let val = reading[metric];
-    if (val === undefined && metric === 'windspeed') {
-        val = reading.wind_speed;
-    }
-    if (val === undefined || val === null) {
-        return;
-    }
-
-    // Update Latest stat card
-    document.getElementById('stat-latest').textContent = typeof val === 'number' ? val.toFixed(2) : val;
-    document.getElementById('stat-latest-time').textContent = formatTime(reading.timestamp);
-
-    // Maintain raw series array in state
-    currentRawPoints.push({ t: reading.timestamp, v: val });
-
-    // Handle limit pruning if Last N Values is active
+    const metricMode = document.getElementById('metric-select').value;
     const rangeSelect = document.getElementById('range-select').value;
-    if (rangeSelect === 'limit') {
-        const limit = parseInt(document.getElementById('limit-select').value, 10) || 50;
-        while (currentRawPoints.length > limit) {
-            currentRawPoints.shift();
+    const limit = rangeSelect === 'limit' ? (parseInt(document.getElementById('limit-select').value, 10) || 50) : null;
+    const windowSize = parseInt(document.getElementById('rollingWindow').value, 10) || 10;
+    const rawEnabled = document.getElementById('toggleRaw').checked;
+    const rollingEnabled = document.getElementById('toggleRolling').checked;
+
+    if (metricMode === 'all') {
+        const metrics = ['temperature', 'humidity', 'windspeed'];
+        for (const m of metrics) {
+            let val = reading[m];
+            if (val === undefined && m === 'windspeed') val = reading.wind_speed;
+            if (val === undefined || val === null) continue;
+
+            const numVal = typeof val === 'number' ? val : parseFloat(val);
+            const valStr = numVal.toFixed(2);
+
+            // Update latest readings immediately
+            if (m === 'temperature') {
+                document.getElementById('stat-temp-latest').textContent = `${valStr} °C`;
+                document.getElementById('mini-temp-latest').textContent = `${valStr} °C`;
+            } else if (m === 'humidity') {
+                document.getElementById('stat-hum-latest').textContent = `${valStr} %`;
+                document.getElementById('mini-hum-latest').textContent = `${valStr} %`;
+            } else if (m === 'windspeed') {
+                document.getElementById('stat-wind-latest').textContent = `${valStr} m/s`;
+                document.getElementById('mini-wind-latest').textContent = `${valStr} m/s`;
+            }
+
+            multiSeries[m].push({ t: reading.timestamp, v: numVal });
+            if (limit && multiSeries[m].length > limit) {
+                while (multiSeries[m].length > limit) multiSeries[m].shift();
+            }
         }
+
+        // Recompute global bounds and update panels with gap/tooltip integrity (S1, S2, S3)
+        refreshAllPanelsData(multiSeries, rawEnabled, rollingEnabled, windowSize, rangeSelect);
+        scheduleCoalescedStatsRefresh(); // S5
+    } else {
+        // Single metric mode
+        let val = reading[metricMode];
+        if (val === undefined && (metricMode === 'windspeed' || metricMode === 'wind_speed')) {
+            val = reading.windspeed !== undefined ? reading.windspeed : reading.wind_speed;
+        }
+        if (val === undefined || val === null) return;
+
+        const numVal = typeof val === 'number' ? val : parseFloat(val);
+        document.getElementById('stat-latest').textContent = numVal.toFixed(2);
+        document.getElementById('stat-latest-time').textContent = formatFullTimestamp(reading.timestamp);
+
+        currentRawPoints.push({ t: reading.timestamp, v: numVal });
+        if (limit && currentRawPoints.length > limit) {
+            while (currentRawPoints.length > limit) currentRawPoints.shift();
+        }
+
+        renderSingleChart(metricMode, currentRawPoints, rawEnabled, rollingEnabled, windowSize, rangeSelect);
+        scheduleCoalescedStatsRefresh(); // S5
     }
-
-    // If Chart.js chart exists, update datasets by role
-    if (chart && chart.data) {
-        chart.data.labels = currentRawPoints.map(p => formatTime(p.t));
-
-        const rawDataset = chart.data.datasets.find(ds => ds.id === 'raw');
-        if (rawDataset) {
-            rawDataset.data = currentRawPoints.map(p => p.v);
-        }
-
-        const rollingDataset = chart.data.datasets.find(ds => ds.id === 'rolling');
-        if (rollingDataset) {
-            const windowSize = parseInt(document.getElementById('rollingWindow').value, 10) || 10;
-            const rawVals = currentRawPoints.map(p => p.v);
-            rollingDataset.data = computeRollingValues(rawVals, windowSize);
-        }
-
-        chart.update('none');
-
-        // Update summary stats (avg, min, max) from raw data points
-        updateStatsFromRawPoints();
-    }
-}
-
-/**
- * Update summary stats (avg, min, max) from raw data points
- */
-function updateStatsFromRawPoints() {
-    if (!currentRawPoints || currentRawPoints.length === 0) return;
-    const values = currentRawPoints.map(p => p.v).filter(v => v !== null && !isNaN(v));
-    if (values.length === 0) return;
-
-    const sum = values.reduce((acc, curr) => acc + curr, 0);
-    const avg = sum / values.length;
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-
-    document.getElementById('stat-avg').textContent = avg.toFixed(2);
-    document.getElementById('stat-min').textContent = min.toFixed(2);
-    document.getElementById('stat-max').textContent = max.toFixed(2);
 }
 
 /**
@@ -287,10 +373,7 @@ async function loadStations() {
             return;
         }
 
-        // Populate dropdown safely using DOM API (prevents stored XSS)
         select.replaceChildren(...stations.map(s => new Option(s, s)));
-
-        // Select first station by default
         select.value = stations[0];
         console.log(`[Stations] Loaded ${stations.length} stations, selected: ${stations[0]}`);
 
@@ -331,8 +414,7 @@ async function refreshAll() {
     try {
         const station = document.getElementById('station-select').value;
         const metric = document.getElementById('metric-select').value;
-        const rangeSelect = document.getElementById('range-select');
-        const range = rangeSelect.value;
+        const range = document.getElementById('range-select').value;
         const limitSelect = document.getElementById('limit-select');
 
         if (!station) {
@@ -340,7 +422,6 @@ async function refreshAll() {
             return;
         }
 
-        // Build query params
         let queryParams = `?station_id=${encodeURIComponent(station)}&metric=${encodeURIComponent(metric)}`;
         if (range === 'limit') {
             const limit = limitSelect.value;
@@ -357,15 +438,24 @@ async function refreshAll() {
 
         // Hide empty state
         document.getElementById('empty-state').style.display = 'none';
-        document.getElementById('stats-container').style.display = 'grid';
 
-        // Store params for API calls
-        const apiParams = queryParams;
+        // Toggle visibility of multi-stats vs single-stats containers
+        if (metric === 'all') {
+            document.getElementById('multi-stats-container').style.display = 'grid';
+            document.getElementById('stats-container').style.display = 'none';
+            document.getElementById('multi-panels-container').style.display = 'flex';
+            document.getElementById('chart-container').style.display = 'none';
+        } else {
+            document.getElementById('multi-stats-container').style.display = 'none';
+            document.getElementById('stats-container').style.display = 'grid';
+            document.getElementById('multi-panels-container').style.display = 'none';
+            document.getElementById('chart-container').style.display = 'block';
+        }
 
-        // Fetch both in parallel
+        // Fetch stats and readings in parallel
         await Promise.all([
-            fetchStats(apiParams),
-            fetchReadings(apiParams)
+            fetchStats(queryParams),
+            fetchReadings(queryParams)
         ]);
 
         lastUpdatedTime = new Date();
@@ -381,225 +471,823 @@ async function refreshAll() {
 }
 
 /**
- * Fetch and display stats
+ * Fetch and display stats from full dataset
  */
 async function fetchStats(queryParams) {
     try {
         const url = `/api/stats${queryParams}`;
         const response = await fetch(url);
         const data = await response.json();
+        const metric = new URLSearchParams(queryParams).get('metric');
 
-        // Update stat cards
-        document.getElementById('stat-latest').textContent = data.latest !== null ? data.latest : '--';
-        document.getElementById('stat-latest-time').textContent = data.latest_t ? formatTime(data.latest_t) : '';
-        document.getElementById('stat-avg').textContent = data.avg !== null ? data.avg : '--';
-        document.getElementById('stat-min').textContent = data.min !== null ? data.min : '--';
-        document.getElementById('stat-max').textContent = data.max !== null ? data.max : '--';
-
-        console.log(`[Stats] Latest=${data.latest}, Avg=${data.avg}`);
+        if (metric === 'all') {
+            updateMultiMetricStats(data);
+        } else {
+            updateSingleMetricStats(data, metric);
+        }
     } catch (error) {
         console.error('[Error] Failed to fetch stats:', error);
-        document.getElementById('stat-latest').textContent = '--';
-        document.getElementById('stat-avg').textContent = '--';
-        document.getElementById('stat-min').textContent = '--';
-        document.getElementById('stat-max').textContent = '--';
     }
 }
 
 /**
- * Fetch and display readings (chart or table)
+ * Update stats cards for All Panels view
+ */
+function updateMultiMetricStats(data) {
+    if (!data) return;
+
+    // Temperature
+    const t = data.temperature || {};
+    document.getElementById('stat-temp-latest').textContent = t.latest !== null && t.latest !== undefined ? `${t.latest.toFixed(2)} °C` : '--';
+    document.getElementById('stat-temp-avg').textContent = t.avg !== null && t.avg !== undefined ? `${t.avg.toFixed(2)} °C` : '--';
+    document.getElementById('stat-temp-min').textContent = t.min !== null && t.min !== undefined ? `${t.min.toFixed(2)} °C` : '--';
+    document.getElementById('stat-temp-max').textContent = t.max !== null && t.max !== undefined ? `${t.max.toFixed(2)} °C` : '--';
+
+    document.getElementById('mini-temp-latest').textContent = t.latest !== null && t.latest !== undefined ? `${t.latest.toFixed(2)} °C` : '--';
+    document.getElementById('mini-temp-avg').textContent = t.avg !== null && t.avg !== undefined ? `${t.avg.toFixed(2)} °C` : '--';
+    document.getElementById('mini-temp-min').textContent = t.min !== null && t.min !== undefined ? `${t.min.toFixed(2)} °C` : '--';
+    document.getElementById('mini-temp-max').textContent = t.max !== null && t.max !== undefined ? `${t.max.toFixed(2)} °C` : '--';
+
+    // Humidity
+    const h = data.humidity || {};
+    document.getElementById('stat-hum-latest').textContent = h.latest !== null && h.latest !== undefined ? `${h.latest.toFixed(2)} %` : '--';
+    document.getElementById('stat-hum-avg').textContent = h.avg !== null && h.avg !== undefined ? `${h.avg.toFixed(2)} %` : '--';
+    document.getElementById('stat-hum-min').textContent = h.min !== null && h.min !== undefined ? `${h.min.toFixed(2)} %` : '--';
+    document.getElementById('stat-hum-max').textContent = h.max !== null && h.max !== undefined ? `${h.max.toFixed(2)} %` : '--';
+
+    document.getElementById('mini-hum-latest').textContent = h.latest !== null && h.latest !== undefined ? `${h.latest.toFixed(2)} %` : '--';
+    document.getElementById('mini-hum-avg').textContent = h.avg !== null && h.avg !== undefined ? `${h.avg.toFixed(2)} %` : '--';
+    document.getElementById('mini-hum-min').textContent = h.min !== null && h.min !== undefined ? `${h.min.toFixed(2)} %` : '--';
+    document.getElementById('mini-hum-max').textContent = h.max !== null && h.max !== undefined ? `${h.max.toFixed(2)} %` : '--';
+
+    // Wind Speed
+    const w = data.windspeed || {};
+    document.getElementById('stat-wind-latest').textContent = w.latest !== null && w.latest !== undefined ? `${w.latest.toFixed(2)} m/s` : '--';
+    document.getElementById('stat-wind-avg').textContent = w.avg !== null && w.avg !== undefined ? `${w.avg.toFixed(2)} m/s` : '--';
+    document.getElementById('stat-wind-min').textContent = w.min !== null && w.min !== undefined ? `${w.min.toFixed(2)} m/s` : '--';
+    document.getElementById('stat-wind-max').textContent = w.max !== null && w.max !== undefined ? `${w.max.toFixed(2)} m/s` : '--';
+
+    document.getElementById('mini-wind-latest').textContent = w.latest !== null && w.latest !== undefined ? `${w.latest.toFixed(2)} m/s` : '--';
+    document.getElementById('mini-wind-avg').textContent = w.avg !== null && w.avg !== undefined ? `${w.avg.toFixed(2)} m/s` : '--';
+    document.getElementById('mini-wind-min').textContent = w.min !== null && w.min !== undefined ? `${w.min.toFixed(2)} m/s` : '--';
+    document.getElementById('mini-wind-max').textContent = w.max !== null && w.max !== undefined ? `${w.max.toFixed(2)} m/s` : '--';
+}
+
+/**
+ * Update single-metric stats cards
+ */
+function updateSingleMetricStats(data, metric) {
+    const config = METRIC_CONFIGS[metric] || { unit: '' };
+    document.getElementById('stat-latest').textContent = data.latest !== null && data.latest !== undefined ? `${data.latest.toFixed(2)} ${config.unit}` : '--';
+    document.getElementById('stat-latest-time').textContent = data.latest_t ? formatFullTimestamp(data.latest_t) : '';
+    document.getElementById('stat-avg').textContent = data.avg !== null && data.avg !== undefined ? `${data.avg.toFixed(2)} ${config.unit}` : '--';
+    document.getElementById('stat-min').textContent = data.min !== null && data.min !== undefined ? `${data.min.toFixed(2)} ${config.unit}` : '--';
+    document.getElementById('stat-max').textContent = data.max !== null && data.max !== undefined ? `${data.max.toFixed(2)} ${config.unit}` : '--';
+}
+
+/**
+ * Fetch and display readings for all panels or single panel
  */
 async function fetchReadings(queryParams) {
     try {
+        const urlParams = new URLSearchParams(queryParams);
+        const metric = urlParams.get('metric');
+        const range = urlParams.get('range') || '24h';
+
+        // Supply full raw sequence without server-side downsampling (S3)
         const url = `/api/readings${queryParams}`;
         const response = await fetch(url);
         const data = await response.json();
-        const points = data.points || [];
 
-        console.log(`[Readings] Fetched ${points.length} points`);
-        currentRawPoints = points.map(p => ({ t: p.t, v: p.v }));
-
-        if (points.length === 0) {
-            document.getElementById('chart-container').style.display = 'none';
-            document.getElementById('table-container').style.display = 'none';
-            document.getElementById('chart-loading').style.display = 'block';
-            return;
-        }
-
-        // Get metric from URL params for chart rendering
-        const metric = new URLSearchParams(queryParams).get('metric');
-
-        // Prepare rolling average if enabled
         const rawEnabled = document.getElementById('toggleRaw').checked;
         const rollingEnabled = document.getElementById('toggleRolling').checked;
         const windowSize = parseInt(document.getElementById('rollingWindow').value, 10) || 10;
-        const rollingPoints = rollingEnabled ? rollingAverage(points, windowSize) : [];
 
-        // If both raw and rolling are disabled, nothing to show
-        if (!rawEnabled && (!rollingEnabled || rollingPoints.length === 0)) {
-            document.getElementById('chart-container').style.display = 'none';
-            document.getElementById('table-container').style.display = 'none';
-            document.getElementById('chart-loading').style.display = 'block';
-            return;
-        }
+        if (metric === 'all') {
+            const series = data.series || {};
+            const totalPoints = data.total_points || (data.points ? data.points.length : 0);
 
-        // Try to render chart
-        if (typeof Chart !== 'undefined') {
-            renderChart(metric, points, rawEnabled, rollingEnabled, rollingPoints, windowSize);
-            document.getElementById('chart-container').style.display = 'block';
-            document.getElementById('table-container').style.display = 'none';
+            multiSeries.temperature = series.temperature || [];
+            multiSeries.humidity = series.humidity || [];
+            multiSeries.windspeed = series.windspeed || [];
+
+            updateMetaChips(totalPoints, totalPoints > 350);
+
+            if (typeof Chart !== 'undefined') {
+                renderAlignedPanels(multiSeries, rawEnabled, rollingEnabled, windowSize, range);
+            } else {
+                renderTable(multiSeries.temperature || []);
+            }
         } else {
-            // Fallback to table
-            renderTable(points);
-            document.getElementById('chart-container').style.display = 'none';
-            document.getElementById('table-container').style.display = 'block';
-        }
+            const points = data.points || [];
+            currentRawPoints = points;
+            const totalPoints = data.total_points || points.length;
 
+            updateMetaChips(totalPoints, totalPoints > 350);
+
+            if (typeof Chart !== 'undefined') {
+                renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSize, range);
+            } else {
+                renderTable(points);
+            }
+        }
     } catch (error) {
         console.error('[Error] Failed to fetch readings:', error);
-        document.getElementById('chart-container').style.display = 'none';
-        document.getElementById('table-container').style.display = 'none';
     }
 }
 
 /**
- * Render Chart.js line chart
+ * Update metadata chips showing point count, aggregation state, and missing data gaps
  */
-function renderChart(metric, points, rawEnabled, rollingEnabled, rollingPoints, windowSize) {
+function updateMetaChips(totalCount, isAggregated, gapCount = 0) {
+    const countChip = document.getElementById('meta-points-count');
+    const aggChip = document.getElementById('meta-aggregation');
+    const gapChip = document.getElementById('meta-gaps');
+
+    if (countChip) {
+        countChip.textContent = `📊 Total: ${totalCount} readings`;
+    }
+
+    if (aggChip) {
+        if (isAggregated) {
+            aggChip.style.display = 'inline-flex';
+            aggChip.textContent = '⚡ Downsampled (Significant Peaks & Troughs Preserved)';
+        } else {
+            aggChip.style.display = 'none';
+        }
+    }
+
+    if (gapChip) {
+        if (gapCount > 0) {
+            gapChip.style.display = 'inline-flex';
+            gapChip.textContent = `⚠️ ${gapCount} data gap${gapCount > 1 ? 's' : ''} detected`;
+        } else {
+            gapChip.style.display = 'none';
+        }
+    }
+}
+
+/**
+ * Detect missing intervals in time series and insert null gap points with spanGaps: false (S4, S2)
+ */
+function insertMissingGaps(points) {
+    if (!points || points.length < 2) return { points: points || [], gapCount: 0 };
+
+    const deltas = [];
+    for (let i = 0; i < points.length - 1; i++) {
+        if (points[i].v === null || points[i + 1].v === null) continue;
+        const t1 = new Date(points[i].t).getTime();
+        const t2 = new Date(points[i + 1].t).getTime();
+        const diff = t2 - t1;
+        if (diff > 0) deltas.push(diff);
+    }
+    if (deltas.length === 0) return { points, gapCount: 0 };
+
+    deltas.sort((a, b) => a - b);
+    const medianDelta = deltas[Math.floor(deltas.length / 2)];
+    const threshold = Math.max(medianDelta * 3, 15 * 60 * 1000);
+
+    const result = [];
+    let gapCount = 0;
+    for (let i = 0; i < points.length; i++) {
+        result.push(points[i]);
+        if (points[i].v === null) {
+            gapCount++;
+        }
+        if (i < points.length - 1) {
+            if (points[i].v !== null && points[i + 1].v !== null) {
+                const t1 = new Date(points[i].t).getTime();
+                const t2 = new Date(points[i + 1].t).getTime();
+                if ((t2 - t1) > threshold) {
+                    gapCount++;
+                    const midIso = new Date(t1 + Math.floor((t2 - t1) / 2)).toISOString();
+                    result.push({ t: midIso, v: null, isGap: true });
+                }
+            }
+        }
+    }
+    return { points: result, gapCount };
+}
+
+/**
+ * Downsample raw points while preserving sharp peak and trough extrema within buckets (S3)
+ */
+function downsamplePeakTroughClient(points, maxPoints = 350) {
+    if (!points || points.length <= maxPoints) return points;
+
+    const segments = [];
+    let currentSegment = [];
+
+    for (const p of points) {
+        if (p.v === null || p.v === undefined) {
+            if (currentSegment.length > 0) {
+                segments.push({ type: 'valid', data: currentSegment });
+                currentSegment = [];
+            }
+            if (segments.length === 0 || segments[segments.length - 1].type !== 'gap') {
+                segments.push({ type: 'gap', data: p });
+            }
+        } else {
+            currentSegment.push(p);
+        }
+    }
+    if (currentSegment.length > 0) {
+        segments.push({ type: 'valid', data: currentSegment });
+    }
+
+    const totalValid = segments.reduce((acc, seg) => seg.type === 'valid' ? acc + seg.data.length : acc, 0);
+    if (totalValid === 0) {
+        return segments.filter(s => s.type === 'gap').map(s => s.data);
+    }
+
+    const gapCount = segments.filter(s => s.type === 'gap').length;
+    const availableBudget = Math.max(2, maxPoints - gapCount);
+
+    const result = [];
+    for (const seg of segments) {
+        if (seg.type === 'gap') {
+            result.push(seg.data);
+            continue;
+        }
+
+        const data = seg.data;
+        const segBudget = Math.max(2, Math.floor(availableBudget * (data.length / totalValid)));
+        if (data.length <= segBudget || segBudget < 2) {
+            result.push(...data);
+            continue;
+        }
+
+        const numBuckets = Math.max(1, Math.floor(segBudget / 2));
+        const bucketSize = data.length / numBuckets;
+
+        for (let b = 0; b < numBuckets; b++) {
+            const startIdx = Math.floor(b * bucketSize);
+            const endIdx = b < numBuckets - 1 ? Math.floor((b + 1) * bucketSize) : data.length;
+            const bucket = data.slice(startIdx, endIdx);
+            if (bucket.length === 0) continue;
+
+            let minPt = bucket[0];
+            let maxPt = bucket[0];
+            let sum = 0;
+
+            for (const pt of bucket) {
+                sum += pt.v;
+                if (pt.v < minPt.v) minPt = pt;
+                if (pt.v > maxPt.v) maxPt = pt;
+            }
+
+            const avgVal = parseFloat((sum / bucket.length).toFixed(2));
+            const minVal = parseFloat(minPt.v.toFixed(2));
+            const maxVal = parseFloat(maxPt.v.toFixed(2));
+            const count = bucket.length;
+
+            const minTime = new Date(minPt.t).getTime();
+            const maxTime = new Date(maxPt.t).getTime();
+            const firstPt = minTime <= maxTime ? minPt : maxPt;
+            const secondPt = minTime <= maxTime ? maxPt : minPt;
+
+            result.push({
+                ...firstPt,
+                min: minVal,
+                max: maxVal,
+                avg: avgVal,
+                count: count,
+                aggregated: true
+            });
+
+            if (secondPt !== firstPt && count > 1) {
+                result.push({
+                    ...secondPt,
+                    min: minVal,
+                    max: maxVal,
+                    avg: avgVal,
+                    count: count,
+                    aggregated: true
+                });
+            }
+        }
+    }
+    return result;
+}
+
+/**
+ * Downsample rolling averages by bucket midpoint to maintain smooth trendline (S3)
+ */
+function downsampleRollingClient(points, maxPoints = 350) {
+    if (!points || points.length <= maxPoints) return points;
+
+    const segments = [];
+    let currentSegment = [];
+
+    for (const p of points) {
+        if (p.v === null || p.v === undefined) {
+            if (currentSegment.length > 0) {
+                segments.push({ type: 'valid', data: currentSegment });
+                currentSegment = [];
+            }
+            if (segments.length === 0 || segments[segments.length - 1].type !== 'gap') {
+                segments.push({ type: 'gap', data: p });
+            }
+        } else {
+            currentSegment.push(p);
+        }
+    }
+    if (currentSegment.length > 0) {
+        segments.push({ type: 'valid', data: currentSegment });
+    }
+
+    const totalValid = segments.reduce((acc, seg) => seg.type === 'valid' ? acc + seg.data.length : acc, 0);
+    if (totalValid === 0) {
+        return segments.filter(s => s.type === 'gap').map(s => s.data);
+    }
+
+    const gapCount = segments.filter(s => s.type === 'gap').length;
+    const availableBudget = Math.max(2, maxPoints - gapCount);
+
+    const result = [];
+    for (const seg of segments) {
+        if (seg.type === 'gap') {
+            result.push(seg.data);
+            continue;
+        }
+
+        const data = seg.data;
+        const segBudget = Math.max(2, Math.floor(availableBudget * (data.length / totalValid)));
+        if (data.length <= segBudget || segBudget < 2) {
+            result.push(...data);
+            continue;
+        }
+
+        const numBuckets = Math.max(1, segBudget);
+        const bucketSize = data.length / numBuckets;
+
+        for (let b = 0; b < numBuckets; b++) {
+            const startIdx = Math.floor(b * bucketSize);
+            const endIdx = b < numBuckets - 1 ? Math.floor((b + 1) * bucketSize) : data.length;
+            const bucket = data.slice(startIdx, endIdx);
+            if (bucket.length === 0) continue;
+
+            const midIdx = Math.floor(bucket.length / 2);
+            result.push(bucket[midIdx]);
+        }
+    }
+    return result;
+}
+
+/**
+ * Pre-compute rolling average over FULL raw reading sequence BEFORE downsampling (S3)
+ */
+function computeRollingValuesOnRawPoints(points, windowSize) {
+    if (!points || points.length === 0) return [];
+    if (windowSize <= 1) return points.map(p => ({ t: p.t, v: p.v }));
+
+    const result = [];
+    let sum = 0;
+    const window = [];
+
+    for (let i = 0; i < points.length; i++) {
+        const val = points[i].v;
+        if (val !== null && val !== undefined && !isNaN(val)) {
+            window.push(val);
+            sum += val;
+            if (window.length > windowSize) {
+                sum -= window.shift();
+            }
+            result.push({ t: points[i].t, v: sum / window.length });
+        } else {
+            window.length = 0; // Reset rolling buffer on gap/null
+            sum = 0;
+            result.push({ t: points[i].t, v: null });
+        }
+    }
+    return result;
+}
+
+/**
+ * Calculate common global continuous time bounds across all series (S1)
+ */
+function getCommonTimeBounds(seriesMap) {
+    let minTime = Infinity;
+    let maxTime = -Infinity;
+
+    for (const key of Object.keys(seriesMap)) {
+        const pts = seriesMap[key] || [];
+        for (const p of pts) {
+            if (!p.t) continue;
+            const ms = new Date(p.t).getTime();
+            if (ms < minTime) minTime = ms;
+            if (ms > maxTime) maxTime = ms;
+        }
+    }
+
+    if (minTime === Infinity || maxTime === -Infinity) {
+        const now = Date.now();
+        return { minTime: now - 3600000, maxTime: now };
+    }
+    if (minTime === maxTime) {
+        return { minTime: minTime - 60000, maxTime: maxTime + 60000 };
+    }
+    return { minTime, maxTime };
+}
+
+/**
+ * Prepare point objects for continuous linear-time axis with raw references (S1, S2, S3, S4)
+ */
+function prepareSeriesForContinuousAxis(rawSeries, rawEnabled, rollingEnabled, windowSize) {
+    // 1. Calculate true rolling averages on the full raw sequence first (S3)
+    const rollingSeries = rollingEnabled ? computeRollingValuesOnRawPoints(rawSeries, windowSize) : [];
+
+    // 2. Insert missing gap markers on full raw sequence BEFORE downsampling (S4)
+    const { points: gappedRaw, gapCount: rawGaps } = insertMissingGaps(rawSeries);
+    const { points: gappedRolling, gapCount: rollingGaps } = insertMissingGaps(rollingSeries);
+
+    // 3. Downsample for canvas display preserving extrema and gap boundaries (S3, S4)
+    const displayRaw = gappedRaw.length > 350 ? downsamplePeakTroughClient(gappedRaw, 350) : gappedRaw;
+    const displayRolling = gappedRolling.length > 350 ? downsampleRollingClient(gappedRolling, 350) : gappedRolling;
+
+    // 4. Map into { x: timestampMs, y: val, raw: pointRef }
+    const rawData = rawEnabled ? displayRaw.map(p => ({
+        x: new Date(p.t).getTime(),
+        y: p.v,
+        raw: p
+    })) : [];
+
+    const rollingData = rollingEnabled ? displayRolling.map(p => ({
+        x: new Date(p.t).getTime(),
+        y: p.v,
+        raw: p
+    })) : [];
+
+    return {
+        rawData,
+        rollingData,
+        gapCount: Math.max(rawGaps, rollingGaps),
+        isAggregated: rawSeries.length > 350
+    };
+}
+
+/**
+ * Update all panel datasets and synchronize time bounds on live telemetry updates (S1, S2, S3)
+ */
+function refreshAllPanelsData(seriesMap, rawEnabled, rollingEnabled, windowSize, range) {
+    const { minTime, maxTime } = getCommonTimeBounds(seriesMap);
+    let totalGaps = 0;
+    let anyAggregated = false;
+    const metrics = ['temperature', 'humidity', 'windspeed'];
+
+    for (const m of metrics) {
+        const c = charts[m];
+        if (!c) continue;
+
+        const { rawData, rollingData, gapCount, isAggregated } = prepareSeriesForContinuousAxis(
+            seriesMap[m] || [],
+            rawEnabled,
+            rollingEnabled,
+            windowSize
+        );
+        totalGaps = Math.max(totalGaps, gapCount);
+        if (isAggregated) anyAggregated = true;
+
+        // Update scales with common shared bounds (S1)
+        c.options.scales.x.min = minTime;
+        c.options.scales.x.max = maxTime;
+
+        const rawDs = c.data.datasets.find(ds => ds.id === 'raw');
+        if (rawDs) rawDs.data = rawData;
+
+        const rollingDs = c.data.datasets.find(ds => ds.id === 'rolling');
+        if (rollingDs) rollingDs.data = rollingData;
+
+        c.update('none');
+    }
+
+    const total = (seriesMap.temperature || []).length;
+    updateMetaChips(total, anyAggregated, totalGaps);
+}
+
+/**
+ * Render three vertically aligned panels for Temperature, Humidity, and Wind Speed
+ * Using a shared continuous linear time axis (S1, S2, S3)
+ */
+function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, range) {
+    let totalGaps = 0;
+    let anyAggregated = false;
+    const metrics = ['temperature', 'humidity', 'windspeed'];
+    const { minTime, maxTime } = getCommonTimeBounds(seriesMap);
+
+    for (const m of metrics) {
+        const rawPoints = seriesMap[m] || [];
+        const { rawData, rollingData, gapCount, isAggregated } = prepareSeriesForContinuousAxis(
+            rawPoints,
+            rawEnabled,
+            rollingEnabled,
+            windowSize
+        );
+        totalGaps = Math.max(totalGaps, gapCount);
+        if (isAggregated) anyAggregated = true;
+
+        const config = METRIC_CONFIGS[m];
+        const ctx = document.getElementById(config.canvasId);
+        if (!ctx) continue;
+
+        if (charts[m]) {
+            charts[m].destroy();
+        }
+
+        const datasets = [];
+
+        if (rawEnabled) {
+            datasets.push({
+                id: 'raw',
+                label: `Raw ${config.title} (${config.unit})`,
+                data: rawData,
+                borderColor: config.rawBorder,
+                backgroundColor: config.rawBg,
+                borderWidth: 2,
+                fill: true,
+                tension: 0.2,
+                spanGaps: false, // Ensures missing data renders as explicit line breaks (S4)
+                pointRadius: rawData.length > 150 ? 1 : 3,
+                pointHoverRadius: 5,
+                pointBackgroundColor: config.color,
+                pointBorderColor: '#ffffff',
+                pointBorderWidth: 1,
+            });
+        }
+
+        if (rollingEnabled && rollingData.length > 0) {
+            datasets.push({
+                id: 'rolling',
+                label: `Rolling Avg (${windowSize})`,
+                data: rollingData,
+                borderColor: config.rollingBorder,
+                backgroundColor: 'transparent',
+                borderWidth: 2.5,
+                borderDash: [6, 3],
+                fill: false,
+                tension: 0.25,
+                spanGaps: false,
+                pointRadius: 0,
+                pointHoverRadius: 4,
+            });
+        }
+
+        charts[m] = new Chart(ctx, {
+            type: 'line',
+            data: {
+                datasets: datasets
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                interaction: {
+                    mode: 'nearest',
+                    axis: 'x',
+                    intersect: false,
+                },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top',
+                        labels: {
+                            boxWidth: 14,
+                            padding: 10,
+                            font: { size: 11, weight: '600' }
+                        }
+                    },
+                    tooltip: {
+                        enabled: true,
+                        backgroundColor: 'rgba(15, 23, 42, 0.94)',
+                        titleColor: '#f8fafc',
+                        bodyColor: '#e2e8f0',
+                        borderColor: 'rgba(255, 255, 255, 0.1)',
+                        borderWidth: 1,
+                        padding: 10,
+                        cornerRadius: 8,
+                        callbacks: {
+                            title: (tooltipItems) => {
+                                if (!tooltipItems.length) return '';
+                                const rawObj = tooltipItems[0].raw;
+                                const pt = rawObj ? rawObj.raw : null;
+                                return pt ? formatFullTimestamp(pt.t) : formatFullTimestamp(new Date(tooltipItems[0].parsed.x).toISOString());
+                            },
+                            label: (context) => {
+                                const rawObj = context.raw;
+                                const pt = rawObj ? rawObj.raw : null;
+                                if (!pt || pt.v === null || context.parsed.y === null) {
+                                    return `${context.dataset.label}: [Missing / Gap]`;
+                                }
+
+                                let line = `${context.dataset.label}: ${context.parsed.y.toFixed(2)} ${config.unit}`;
+                                if (pt.aggregated && context.dataset.id === 'raw') {
+                                    line += ` (Bucket: min ${pt.min}, max ${pt.max}, avg ${pt.avg})`;
+                                }
+                                return line;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: false,
+                        grid: { color: 'rgba(0, 0, 0, 0.05)' },
+                        title: {
+                            display: true,
+                            text: config.unit,
+                            font: { size: 11, weight: 'bold' }
+                        },
+                        ticks: {
+                            font: { size: 10 }
+                        }
+                    },
+                    x: {
+                        type: 'linear',
+                        min: minTime,
+                        max: maxTime,
+                        grid: { display: false },
+                        ticks: {
+                            autoSkip: true,
+                            maxTicksLimit: 8,
+                            maxRotation: 0,
+                            font: { size: 10 },
+                            callback: function(value) {
+                                return formatAxisTime(new Date(value).toISOString(), range);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    const total = (seriesMap.temperature || []).length;
+    updateMetaChips(total, anyAggregated, totalGaps);
+}
+
+/**
+ * Render single chart when an individual metric is chosen (S1, S2, S3, S4)
+ */
+function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSize, range) {
     const ctx = document.getElementById('data-chart');
+    if (!ctx) return;
 
     if (chart) {
         chart.destroy();
     }
-
-    // Determine metric-specific styling
-    let borderColor = '#667eea';
-    let backgroundColor = 'rgba(102, 126, 234, 0.1)';
-    let unit = '';
-
-    if (metric === 'temperature') {
-        borderColor = '#ff6b6b';
-        backgroundColor = 'rgba(255, 107, 107, 0.1)';
-        unit = '°C';
-    } else if (metric === 'humidity') {
-        borderColor = '#4dabf7';
-        backgroundColor = 'rgba(77, 171, 247, 0.1)';
-        unit = '%';
-    } else if (metric === 'windspeed') {
-        borderColor = '#51cf66';
-        backgroundColor = 'rgba(81, 207, 102, 0.1)';
-        unit = 'm/s';
+    if (charts.single) {
+        charts.single.destroy();
     }
 
-    const labels = points.map(p => formatTime(p.t));
-    const values = points.map(p => p.v);
-    const metricLabel = metric.charAt(0).toUpperCase() + metric.slice(1);
+    const config = METRIC_CONFIGS[metric] || {
+        title: metric.charAt(0).toUpperCase() + metric.slice(1),
+        unit: '',
+        color: '#667eea',
+        rawBorder: '#667eea',
+        rawBg: 'rgba(102, 126, 234, 0.1)',
+        rollingBorder: '#1e293b'
+    };
 
-    ctx.style.display = 'block';
-    document.getElementById('chart-loading').style.display = 'none';
+    const { rawData, rollingData, gapCount, isAggregated } = prepareSeriesForContinuousAxis(
+        points,
+        rawEnabled,
+        rollingEnabled,
+        windowSize
+    );
+
+    updateMetaChips(points.length, isAggregated, gapCount);
+
+    let minTime = Infinity;
+    let maxTime = -Infinity;
+    for (const p of points) {
+        if (!p.t) continue;
+        const ms = new Date(p.t).getTime();
+        if (ms < minTime) minTime = ms;
+        if (ms > maxTime) maxTime = ms;
+    }
+    if (minTime === Infinity || maxTime === -Infinity) {
+        const now = Date.now();
+        minTime = now - 3600000;
+        maxTime = now;
+    }
 
     const datasets = [];
 
     if (rawEnabled) {
         datasets.push({
             id: 'raw',
-            label: `${metricLabel} (${unit})`,
-            data: values,
-            borderColor: borderColor,
-            backgroundColor: backgroundColor,
+            label: `Raw ${config.title} (${config.unit})`,
+            data: rawData,
+            borderColor: config.rawBorder,
+            backgroundColor: config.rawBg,
             borderWidth: 2.5,
             fill: true,
-            tension: 0.3,
-            pointRadius: 3,
-            pointHoverRadius: 5,
-            pointBackgroundColor: borderColor,
-            pointBorderColor: 'white',
-            pointBorderWidth: 1,
+            tension: 0.25,
+            spanGaps: false,
+            pointRadius: rawData.length > 200 ? 1 : 3,
+            pointHoverRadius: 6,
+            pointBackgroundColor: config.color,
+            pointBorderColor: '#ffffff',
+            pointBorderWidth: 1.5,
         });
     }
 
-    if (rollingEnabled && rollingPoints.length > 0) {
+    if (rollingEnabled && rollingData.length > 0) {
         datasets.push({
             id: 'rolling',
             label: `Rolling Avg (${windowSize})`,
-            data: rollingPoints.map(p => p.v),
-            borderColor: '#1f2937', // dark neutral for contrast
+            data: rollingData,
+            borderColor: config.rollingBorder,
             backgroundColor: 'transparent',
             borderWidth: 3,
+            borderDash: [6, 4],
             fill: false,
             tension: 0.3,
+            spanGaps: false,
             pointRadius: 0,
-            borderDash: [6, 4],
+            pointHoverRadius: 5,
         });
     }
+
+    ctx.style.display = 'block';
+    const chartLoading = document.getElementById('chart-loading');
+    if (chartLoading) chartLoading.style.display = 'none';
 
     chart = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: labels,
             datasets: datasets
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            animation: false,
+            interaction: {
+                mode: 'nearest',
+                axis: 'x',
+                intersect: false,
+            },
             plugins: {
                 legend: {
                     display: true,
                     position: 'top',
                     labels: { padding: 15, font: { size: 12, weight: 'bold' } }
                 },
-                filler: { propagate: true }
+                tooltip: {
+                    enabled: true,
+                    backgroundColor: 'rgba(15, 23, 42, 0.94)',
+                    titleColor: '#f8fafc',
+                    bodyColor: '#e2e8f0',
+                    padding: 12,
+                    cornerRadius: 8,
+                    callbacks: {
+                        title: (tooltipItems) => {
+                            if (!tooltipItems.length) return '';
+                            const rawObj = tooltipItems[0].raw;
+                            const pt = rawObj ? rawObj.raw : null;
+                            return pt ? formatFullTimestamp(pt.t) : formatFullTimestamp(new Date(tooltipItems[0].parsed.x).toISOString());
+                        },
+                        label: (context) => {
+                            const rawObj = context.raw;
+                            const pt = rawObj ? rawObj.raw : null;
+                            if (!pt || pt.v === null || context.parsed.y === null) {
+                                return `${context.dataset.label}: [Missing / Gap]`;
+                            }
+
+                            let line = `${context.dataset.label}: ${context.parsed.y.toFixed(2)} ${config.unit}`;
+                            if (pt.aggregated && context.dataset.id === 'raw') {
+                                line += ` (Bucket: min ${pt.min}, max ${pt.max}, avg ${pt.avg})`;
+                            }
+                            return line;
+                        }
+                    }
+                }
             },
             scales: {
                 y: {
                     beginAtZero: false,
                     grid: { color: 'rgba(0, 0, 0, 0.05)' },
-                    title: { display: true, text: unit }
+                    title: { display: true, text: config.unit }
                 },
                 x: {
-                    grid: { display: false }
+                    type: 'linear',
+                    min: minTime,
+                    max: maxTime,
+                    grid: { display: false },
+                    ticks: {
+                        autoSkip: true,
+                        maxTicksLimit: 10,
+                        maxRotation: 0,
+                        callback: function(value) {
+                            return formatAxisTime(new Date(value).toISOString(), range);
+                        }
+                    }
                 }
             }
         }
     });
-}
 
-/**
- * Compute rolling average over a trailing window of point objects.
- */
-function rollingAverage(points, windowSize) {
-    if (!points || points.length === 0) return [];
-    if (windowSize <= 1) return points;
-    const result = [];
-    let sum = 0;
-    for (let i = 0; i < points.length; i++) {
-        sum += points[i].v;
-        if (i >= windowSize) {
-            sum -= points[i - windowSize].v;
-        }
-        const count = Math.min(windowSize, i + 1);
-        result.push({ t: points[i].t, v: sum / count });
-    }
-    return result;
-}
-
-/**
- * Compute rolling average over an array of numeric values.
- */
-function computeRollingValues(values, windowSize) {
-    if (!values || values.length === 0) return [];
-    if (windowSize <= 1) return [...values];
-    const result = [];
-    let sum = 0;
-    for (let i = 0; i < values.length; i++) {
-        sum += values[i];
-        if (i >= windowSize) {
-            sum -= values[i - windowSize];
-        }
-        const count = Math.min(windowSize, i + 1);
-        result.push(sum / count);
-    }
-    return result;
+    charts.single = chart;
 }
 
 /**
@@ -607,11 +1295,12 @@ function computeRollingValues(values, windowSize) {
  */
 function renderTable(points) {
     const tbody = document.getElementById('table-body');
+    if (!tbody) return;
     tbody.innerHTML = points
         .map(p => `
             <tr>
-                <td>${formatTime(p.t)}</td>
-                <td>${p.v.toFixed(2)}</td>
+                <td>${formatFullTimestamp(p.t)}</td>
+                <td>${p.v !== null && p.v !== undefined ? p.v.toFixed(2) : 'N/A'}</td>
             </tr>
         `)
         .join('');
@@ -623,24 +1312,62 @@ function renderTable(points) {
 function showEmptyState() {
     document.getElementById('empty-state').style.display = 'block';
     document.getElementById('stats-container').style.display = 'none';
+    document.getElementById('multi-stats-container').style.display = 'none';
+    document.getElementById('multi-panels-container').style.display = 'none';
     document.getElementById('chart-container').style.display = 'none';
-    document.getElementById('table-container').style.display = 'none';
+    const tableCont = document.getElementById('table-container');
+    if (tableCont) tableCont.style.display = 'none';
 }
 
 /**
- * Format timestamp for display
+ * Format timestamp for readable axis ticks according to selected range
  */
-function formatTime(isoString) {
+function formatAxisTime(isoString, range) {
+    if (!isoString) return '';
+    try {
+        const date = new Date(isoString);
+        if (range === '1h' || range === '6h' || range === '24h' || range === 'limit') {
+            return date.toLocaleTimeString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+            });
+        }
+        return date.toLocaleDateString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        });
+    } catch (e) {
+        return isoString;
+    }
+}
+
+/**
+ * Full formatted timestamp for tooltips and cards
+ */
+function formatFullTimestamp(isoString) {
     try {
         const date = new Date(isoString);
         return date.toLocaleString('en-US', {
             month: 'short',
             day: '2-digit',
+            year: 'numeric',
             hour: '2-digit',
             minute: '2-digit',
+            second: '2-digit',
             hour12: true
         });
     } catch (e) {
         return isoString;
     }
+}
+
+/**
+ * Legacy formatTime backward compatibility alias
+ */
+function formatTime(isoString) {
+    return formatFullTimestamp(isoString);
 }

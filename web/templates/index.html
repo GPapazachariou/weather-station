@@ -23,17 +23,22 @@
 
         <!-- Controls -->
         <div class="controls-section">
-            <select id="station-select" class="dropdown">
+            <select id="station-select" class="dropdown" title="Select weather station">
                 <option value="">Loading stations...</option>
             </select>
-            <select id="metric-select" class="dropdown">
+            <select id="metric-select" class="dropdown" title="Select metric view">
+                <option value="all" selected>All Panels (Aligned)</option>
                 <option value="temperature">Temperature (°C)</option>
                 <option value="humidity">Humidity (%)</option>
                 <option value="windspeed">Wind Speed (m/s)</option>
             </select>
-            <select id="range-select" class="dropdown">
+            <select id="range-select" class="dropdown" title="Select time range">
+                <option value="1h">Last 1 hour</option>
                 <option value="6h">Last 6 hours</option>
                 <option value="24h" selected>Last 24 hours</option>
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="all">All History</option>
                 <option value="limit">Last N Values</option>
             </select>
             <select id="limit-select" class="dropdown" style="display: none;" title="Select number of values to display">
@@ -41,16 +46,17 @@
                 <option value="50" selected>50 values</option>
                 <option value="100">100 values</option>
                 <option value="500">500 values</option>
+                <option value="1000">1000 values</option>
             </select>
-            <label class="toggle-label">
+            <label class="toggle-label" title="Toggle visibility of raw telemetry readings">
                 <input type="checkbox" id="toggleRaw" checked>
-                <span>Show raw data</span>
+                <span>Raw readings</span>
             </label>
-            <label class="toggle-label">
+            <label class="toggle-label" title="Toggle visibility of rolling average line">
                 <input type="checkbox" id="toggleRolling" checked>
-                <span>Show rolling avg</span>
+                <span>Rolling average</span>
             </label>
-            <select id="rollingWindow" class="dropdown">
+            <select id="rollingWindow" class="dropdown" title="Rolling average window size">
                 <option value="3">Window: 3</option>
                 <option value="5">Window: 5</option>
                 <option value="10" selected>Window: 10</option>
@@ -59,14 +65,21 @@
             </select>
         </div>
 
+        <!-- Data Info & Quality Bar -->
+        <div id="data-meta-bar" class="meta-bar">
+            <span id="meta-points-count" class="meta-chip">Loading data...</span>
+            <span id="meta-aggregation" class="meta-chip meta-chip-info" style="display: none;">Aggregated (Peaks/Troughs Preserved)</span>
+            <span id="meta-gaps" class="meta-chip meta-chip-warning" style="display: none;">Missing data gaps detected</span>
+        </div>
+
         <!-- Empty State -->
         <div id="empty-state" class="empty-state" style="display: none;">
             <p>📊 No stations or data available yet.</p>
             <p>Start the weather station client to begin collecting data.</p>
         </div>
 
-        <!-- Stats Cards -->
-        <div id="stats-container" class="stats-grid">
+        <!-- Single Metric Stats Cards -->
+        <div id="stats-container" class="stats-grid" style="display: none;">
             <div class="stat-card">
                 <div class="stat-label">Latest</div>
                 <div class="stat-value" id="stat-latest">--</div>
@@ -86,8 +99,108 @@
             </div>
         </div>
 
-        <!-- Chart -->
-        <div id="chart-container" class="chart-section">
+        <!-- Multi-metric Overview Cards (for All Panels view) -->
+        <div id="multi-stats-container" class="multi-stats-grid">
+            <div class="stat-card temp-card">
+                <div class="stat-header">
+                    <span class="stat-icon">🌡️</span>
+                    <span class="stat-label">Temperature (°C)</span>
+                </div>
+                <div class="stat-value" id="stat-temp-latest">--</div>
+                <div class="stat-subvalues">
+                    <span>Avg: <strong id="stat-temp-avg">--</strong></span>
+                    <span>Min: <strong id="stat-temp-min">--</strong></span>
+                    <span>Max: <strong id="stat-temp-max">--</strong></span>
+                </div>
+            </div>
+            <div class="stat-card hum-card">
+                <div class="stat-header">
+                    <span class="stat-icon">💧</span>
+                    <span class="stat-label">Humidity (%)</span>
+                </div>
+                <div class="stat-value" id="stat-hum-latest">--</div>
+                <div class="stat-subvalues">
+                    <span>Avg: <strong id="stat-hum-avg">--</strong></span>
+                    <span>Min: <strong id="stat-hum-min">--</strong></span>
+                    <span>Max: <strong id="stat-hum-max">--</strong></span>
+                </div>
+            </div>
+            <div class="stat-card wind-card">
+                <div class="stat-header">
+                    <span class="stat-icon">💨</span>
+                    <span class="stat-label">Wind Speed (m/s)</span>
+                </div>
+                <div class="stat-value" id="stat-wind-latest">--</div>
+                <div class="stat-subvalues">
+                    <span>Avg: <strong id="stat-wind-avg">--</strong></span>
+                    <span>Min: <strong id="stat-wind-min">--</strong></span>
+                    <span>Max: <strong id="stat-wind-max">--</strong></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Aligned Multi-Panel Layout -->
+        <div id="multi-panels-container" class="multi-panels-section">
+            <div class="panel-card" id="panel-temperature">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-dot temp-dot"></span>
+                        <span class="panel-name">Temperature</span>
+                        <span class="unit-badge">°C</span>
+                    </div>
+                    <div class="panel-mini-stats" id="mini-stats-temperature">
+                        <span>Latest: <strong id="mini-temp-latest">--</strong></span>
+                        <span>Avg: <strong id="mini-temp-avg">--</strong></span>
+                        <span>Min: <strong id="mini-temp-min">--</strong></span>
+                        <span>Max: <strong id="mini-temp-max">--</strong></span>
+                    </div>
+                </div>
+                <div class="panel-chart-wrapper">
+                    <canvas id="chart-temperature"></canvas>
+                </div>
+            </div>
+
+            <div class="panel-card" id="panel-humidity">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-dot hum-dot"></span>
+                        <span class="panel-name">Humidity</span>
+                        <span class="unit-badge">%</span>
+                    </div>
+                    <div class="panel-mini-stats" id="mini-stats-humidity">
+                        <span>Latest: <strong id="mini-hum-latest">--</strong></span>
+                        <span>Avg: <strong id="mini-hum-avg">--</strong></span>
+                        <span>Min: <strong id="mini-hum-min">--</strong></span>
+                        <span>Max: <strong id="mini-hum-max">--</strong></span>
+                    </div>
+                </div>
+                <div class="panel-chart-wrapper">
+                    <canvas id="chart-humidity"></canvas>
+                </div>
+            </div>
+
+            <div class="panel-card" id="panel-windspeed">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-dot wind-dot"></span>
+                        <span class="panel-name">Wind Speed</span>
+                        <span class="unit-badge">m/s</span>
+                    </div>
+                    <div class="panel-mini-stats" id="mini-stats-windspeed">
+                        <span>Latest: <strong id="mini-wind-latest">--</strong></span>
+                        <span>Avg: <strong id="mini-wind-avg">--</strong></span>
+                        <span>Min: <strong id="mini-wind-min">--</strong></span>
+                        <span>Max: <strong id="mini-wind-max">--</strong></span>
+                    </div>
+                </div>
+                <div class="panel-chart-wrapper">
+                    <canvas id="chart-windspeed"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Single Chart (for focused single-metric mode) -->
+        <div id="chart-container" class="chart-section" style="display: none;">
             <div class="loading" id="chart-loading">Loading chart...</div>
             <canvas id="data-chart" style="display: none;"></canvas>
         </div>

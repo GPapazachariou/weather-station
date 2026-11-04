@@ -26,8 +26,12 @@ WEB_PORT = int(os.getenv("WEB_PORT", "8000"))
 
 # Valid time ranges and their durations
 VALID_RANGES = {
+    "1h": timedelta(hours=1),
     "6h": timedelta(hours=6),
     "24h": timedelta(hours=24),
+    "7d": timedelta(days=7),
+    "30d": timedelta(days=30),
+    "all": None,
 }
 # Valid record-count ranges (for "last n values" option)
 VALID_LIMITS = {
@@ -35,9 +39,94 @@ VALID_LIMITS = {
     "50": 50,
     "100": 100,
     "500": 500,
+    "1000": 1000,
 }
 # Valid metrics - we'll detect actual column name at runtime
 VALID_METRICS = {"temperature", "humidity", "windspeed", "wind_speed"}
+
+
+def downsample_peak_trough(points, max_points=300):
+    """Downsample time series while strictly preserving extreme peaks and troughs in each bucket.
+
+    Preserves explicit null/gap boundaries by downsampling each contiguous valid segment
+    independently and preserving gap separator points. Coalesces consecutive nulls into a single
+    gap boundary. Enriches downsampled points with aggregated metadata (min, max, avg, count).
+    """
+    if not points or len(points) <= max_points or max_points < 2:
+        return points
+
+    # Split into contiguous valid segments and coalesce consecutive null points
+    segments = []
+    current_segment = []
+
+    for p in points:
+        if p.get("v") is None:
+            if current_segment:
+                segments.append(("valid", current_segment))
+                current_segment = []
+            if not segments or segments[-1][0] != "gap":
+                segments.append(("gap", p))
+        else:
+            current_segment.append(p)
+    if current_segment:
+        segments.append(("valid", current_segment))
+
+    total_valid = sum(len(seg) for tag, seg in segments if tag == "valid")
+    if total_valid == 0:
+        return [data for tag, data in segments if tag == "gap"]
+
+    gap_count = sum(1 for tag, _ in segments if tag == "gap")
+    available_budget = max(2, max_points - gap_count)
+
+    result = []
+    for tag, data in segments:
+        if tag == "gap":
+            result.append(data)
+            continue
+
+        seg_budget = max(2, int(available_budget * (len(data) / total_valid)))
+        if len(data) <= seg_budget or seg_budget < 2:
+            result.extend(data)
+            continue
+
+        num_buckets = max(1, seg_budget // 2)
+        bucket_size = len(data) / num_buckets
+
+        for b in range(num_buckets):
+            start_idx = int(b * bucket_size)
+            end_idx = int((b + 1) * bucket_size) if b < num_buckets - 1 else len(data)
+            bucket = data[start_idx:end_idx]
+            if not bucket:
+                continue
+
+            valid_points = [p for p in bucket if p.get("v") is not None]
+            if not valid_points:
+                result.append(bucket[0])
+                continue
+
+            min_pt = min(valid_points, key=lambda p: p["v"])
+            max_pt = max(valid_points, key=lambda p: p["v"])
+            avg_val = round(sum(p["v"] for p in valid_points) / len(valid_points), 2)
+            min_val = round(min_pt["v"], 2)
+            max_val = round(max_pt["v"], 2)
+            count = len(valid_points)
+
+            # Chronological order within bucket
+            if min_pt["t"] <= max_pt["t"]:
+                first_pt, second_pt = min_pt, max_pt
+            else:
+                first_pt, second_pt = max_pt, min_pt
+
+            p1 = dict(first_pt)
+            p1.update({"min": min_val, "max": max_val, "avg": avg_val, "count": count, "aggregated": True})
+            result.append(p1)
+
+            if second_pt != first_pt and count > 1:
+                p2 = dict(second_pt)
+                p2.update({"min": min_val, "max": max_val, "avg": avg_val, "count": count, "aggregated": True})
+                result.append(p2)
+
+    return result
 
 # Cache for detected wind column name
 _wind_column_cache = None
@@ -163,18 +252,71 @@ def api_stations():
         return jsonify({"stations": []})
 
 
+def _compute_metric_stats(conn, station_id, metric_col, use_limit, max_records, cutoff_iso):
+    """Compute latest, avg, min, max on the full selected dataset for a metric column."""
+    if use_limit:
+        cursor = conn.execute(
+            f"""
+            SELECT timestamp, {metric_col}
+            FROM readings
+            WHERE station_id = ? AND {metric_col} IS NOT NULL
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (station_id, max_records),
+        )
+        rows = cursor.fetchall()
+        values = [row[metric_col] for row in rows]
+        if values:
+            return {
+                "latest": round(values[0], 2),
+                "latest_t": rows[0]["timestamp"],
+                "avg": round(sum(values) / len(values), 2),
+                "min": round(min(values), 2),
+                "max": round(max(values), 2),
+            }
+        return {"latest": None, "latest_t": None, "avg": None, "min": None, "max": None}
+    else:
+        where_clause = (
+            f"WHERE station_id = ? AND timestamp >= ? AND {metric_col} IS NOT NULL"
+            if cutoff_iso
+            else f"WHERE station_id = ? AND {metric_col} IS NOT NULL"
+        )
+        params = (station_id, cutoff_iso) if cutoff_iso else (station_id,)
+        agg_cursor = conn.execute(
+            f"SELECT AVG({metric_col}), MIN({metric_col}), MAX({metric_col}), COUNT(*) FROM readings {where_clause}",
+            params,
+        )
+        avg_val, min_val, max_val, point_count = agg_cursor.fetchone()
+
+        if point_count > 0 and avg_val is not None:
+            latest_cursor = conn.execute(
+                f"SELECT timestamp, {metric_col} FROM readings {where_clause} ORDER BY timestamp DESC LIMIT 1",
+                params,
+            )
+            latest_row = latest_cursor.fetchone()
+            latest = latest_row[metric_col] if latest_row else None
+            latest_t = latest_row["timestamp"] if latest_row else None
+            return {
+                "latest": round(latest, 2) if latest is not None else None,
+                "latest_t": latest_t,
+                "avg": round(avg_val, 2),
+                "min": round(min_val, 2),
+                "max": round(max_val, 2),
+            }
+        return {"latest": None, "latest_t": None, "avg": None, "min": None, "max": None}
+
+
 @app.route("/api/stats", methods=["GET"])
 def api_stats():
-    """
-    Get statistics for a given station, metric, and time range.
+    """Get statistics for a given station, metric, and time range.
+
+    Calculated from the FULL selected dataset.
     Query params:
       - station_id (required)
-      - metric (required): temperature, humidity, or windspeed
-      - range (optional): 6h, 24h (time-based) or limit param for record-based
-      - limit (optional): 10, 50, 100, 500 (for last n values)
-    
-    Returns:
-      {"latest": 23.5, "latest_t": "2025-12-25T12:00:00", "avg": 22.1, "min": 20.0, "max": 25.5}
+      - metric (required): temperature, humidity, windspeed, or all
+      - range (optional): 1h, 6h, 24h, 7d, 30d, all
+      - limit (optional): 10, 50, 100, 500, 1000
     """
     station_id = request.args.get("station_id", "").strip()
     metric = request.args.get("metric", "").strip()
@@ -182,7 +324,7 @@ def api_stats():
     limit = request.args.get("limit", "").strip()
 
     # Validation
-    if not station_id or metric not in VALID_METRICS:
+    if not station_id or (metric not in VALID_METRICS and metric != "all"):
         return (
             jsonify(
                 {
@@ -198,7 +340,7 @@ def api_stats():
         )
 
     # Determine if we're using time-based or record-based filtering
-    use_limit = limit and limit in VALID_LIMITS
+    use_limit = bool(limit and limit in VALID_LIMITS)
     if not use_limit and time_range not in VALID_RANGES:
         return (
             jsonify(
@@ -214,107 +356,41 @@ def api_stats():
             400,
         )
 
-    # Whitelist safety check for dynamic metric column
-    db_metric = normalize_metric(metric)
-    if db_metric not in {"temperature", "humidity", "windspeed", "wind_speed"}:
-        return (
-            jsonify(
-                {
-                    "error": "Invalid metric",
-                    "latest": None,
-                    "latest_t": None,
-                    "avg": None,
-                    "min": None,
-                    "max": None,
-                }
-            ),
-            400,
-        )
-
     # Calculate UTC time window (if time-based)
-    cutoff_dt = datetime.now(timezone.utc) - VALID_RANGES[time_range] if not use_limit else None
+    delta = VALID_RANGES.get(time_range) if not use_limit else None
+    cutoff_dt = (datetime.now(timezone.utc) - delta) if (not use_limit and delta is not None) else None
     cutoff_iso = cutoff_dt.isoformat() if cutoff_dt else None
+    max_records = VALID_LIMITS.get(limit) if use_limit else None
 
     try:
         with contextlib.closing(get_db()) as conn:
-            if use_limit:
-                max_records = VALID_LIMITS[limit]
-                cursor = conn.execute(
-                    f"""
-                    SELECT timestamp, {db_metric}
-                    FROM readings
-                    WHERE station_id = ? AND {db_metric} IS NOT NULL
-                    ORDER BY timestamp DESC
-                    LIMIT ?
-                    """,
-                    (station_id, max_records),
-                )
-                rows = cursor.fetchall()
-                values = [row[db_metric] for row in rows]
-                latest = values[0] if values else None
-                latest_t = rows[0]["timestamp"] if rows else None
-                point_count = len(values)
-
-                # Calculate stats
-                if values:
-                    result = {
-                        "latest": round(latest, 2),
-                        "latest_t": latest_t,
-                        "avg": round(sum(values) / len(values), 2),
-                        "min": round(min(values), 2),
-                        "max": round(max(values), 2),
-                    }
-                else:
-                    result = {
-                        "latest": None,
-                        "latest_t": None,
-                        "avg": None,
-                        "min": None,
-                        "max": None,
-                    }
+            if metric == "all":
+                wind_col = detect_wind_column()
+                result = {
+                    "temperature": _compute_metric_stats(conn, station_id, "temperature", use_limit, max_records, cutoff_iso),
+                    "humidity": _compute_metric_stats(conn, station_id, "humidity", use_limit, max_records, cutoff_iso),
+                    "windspeed": _compute_metric_stats(conn, station_id, wind_col, use_limit, max_records, cutoff_iso),
+                }
             else:
-                agg_cursor = conn.execute(
-                    f"""
-                    SELECT AVG({db_metric}), MIN({db_metric}), MAX({db_metric}), COUNT(*)
-                    FROM readings
-                    WHERE station_id = ? AND timestamp >= ? AND {db_metric} IS NOT NULL
-                    """,
-                    (station_id, cutoff_iso),
-                )
-                avg_val, min_val, max_val, point_count = agg_cursor.fetchone()
-
-                if point_count > 0 and avg_val is not None:
-                    latest_cursor = conn.execute(
-                        f"""
-                        SELECT timestamp, {db_metric}
-                        FROM readings
-                        WHERE station_id = ? AND timestamp >= ? AND {db_metric} IS NOT NULL
-                        ORDER BY timestamp DESC
-                        LIMIT 1
-                        """,
-                        (station_id, cutoff_iso),
+                db_metric = normalize_metric(metric)
+                if db_metric not in {"temperature", "humidity", "windspeed", "wind_speed"}:
+                    return (
+                        jsonify(
+                            {
+                                "error": "Invalid metric",
+                                "latest": None,
+                                "latest_t": None,
+                                "avg": None,
+                                "min": None,
+                                "max": None,
+                            }
+                        ),
+                        400,
                     )
-                    latest_row = latest_cursor.fetchone()
-                    latest = latest_row[db_metric] if latest_row else None
-                    latest_t = latest_row["timestamp"] if latest_row else None
-                    result = {
-                        "latest": round(latest, 2) if latest is not None else None,
-                        "latest_t": latest_t,
-                        "avg": round(avg_val, 2),
-                        "min": round(min_val, 2),
-                        "max": round(max_val, 2),
-                    }
-                else:
-                    result = {
-                        "latest": None,
-                        "latest_t": None,
-                        "avg": None,
-                        "min": None,
-                        "max": None,
-                    }
+                result = _compute_metric_stats(conn, station_id, db_metric, use_limit, max_records, cutoff_iso)
 
         range_label = f"limit={limit}" if use_limit else f"range={time_range}"
-        logger.info(f"Stats for {station_id}/{metric}/{range_label}: {point_count} points")
+        logger.info(f"Stats for {station_id}/{metric}/{range_label} calculated from full dataset")
         return jsonify(result)
 
     except Exception as e:
@@ -332,45 +408,108 @@ def api_stats():
 
 @app.route("/api/readings", methods=["GET"])
 def api_readings():
-    """
-    Get time series data for a given station, metric, and time range.
+    """Get time series data for a given station, metric, and time range.
+
     Query params:
       - station_id (required)
-      - metric (required): temperature, humidity, or windspeed
-      - range (optional): 6h, 24h (time-based) or limit param for record-based
-      - limit (optional): 10, 50, 100, 500 (for last n values)
-      - since (optional): ISO timestamp cursor (fetches points strictly after timestamp)
-    
-    Returns:
-      {"points": [{"t": "2025-12-25T10:00:00", "v": 23.1}, ...]}
-      (ordered oldest -> newest for Chart.js)
+      - metric (required): temperature, humidity, windspeed, or all
+      - range (optional): 1h, 6h, 24h, 7d, 30d, all
+      - limit (optional): 10, 50, 100, 500, 1000
+      - since (optional): ISO timestamp cursor
+      - downsample (optional): max point count to downsample with peak/trough preservation
     """
     station_id = request.args.get("station_id", "").strip()
     metric = request.args.get("metric", "").strip()
     time_range = request.args.get("range", "24h").strip()
     limit = request.args.get("limit", "").strip()
     since = request.args.get("since", "").strip()
+    downsample_arg = request.args.get("downsample", "").strip()
 
     # Validation
-    if not station_id or metric not in VALID_METRICS:
+    if not station_id or (metric not in VALID_METRICS and metric != "all"):
         return jsonify({"error": "Invalid parameters", "points": []}), 400
 
     # Determine if we're using time-based or record-based filtering
-    use_limit = limit and limit in VALID_LIMITS
+    use_limit = bool(limit and limit in VALID_LIMITS)
     if not use_limit and not since and time_range not in VALID_RANGES:
         return jsonify({"error": "Invalid range or limit", "points": []}), 400
 
-    # Whitelist safety check for dynamic metric column
-    db_metric = normalize_metric(metric)
-    if db_metric not in {"temperature", "humidity", "windspeed", "wind_speed"}:
-        return jsonify({"error": "Invalid metric", "points": []}), 400
+    max_pts = None
+    if downsample_arg:
+        if downsample_arg.isdigit():
+            max_pts = int(downsample_arg)
+        elif downsample_arg.lower() in ("true", "1", "yes"):
+            max_pts = 300
 
     # Calculate UTC time window (if time-based)
-    cutoff_dt = datetime.now(timezone.utc) - VALID_RANGES[time_range] if not use_limit and not since else None
+    delta = VALID_RANGES.get(time_range) if (not use_limit and not since) else None
+    cutoff_dt = (datetime.now(timezone.utc) - delta) if (delta is not None) else None
     cutoff_iso = cutoff_dt.isoformat() if cutoff_dt else None
 
     try:
         with contextlib.closing(get_db()) as conn:
+            wind_col = detect_wind_column()
+            if metric == "all":
+                cols = f"timestamp, temperature, humidity, {wind_col}"
+                if since:
+                    cursor = conn.execute(
+                        f"SELECT {cols} FROM readings WHERE station_id = ? AND timestamp > ? ORDER BY timestamp ASC",
+                        (station_id, since),
+                    )
+                    rows = cursor.fetchall()
+                elif use_limit:
+                    max_records = VALID_LIMITS[limit]
+                    cursor = conn.execute(
+                        f"SELECT {cols} FROM readings WHERE station_id = ? ORDER BY timestamp DESC LIMIT ?",
+                        (station_id, max_records),
+                    )
+                    rows = list(reversed(cursor.fetchall()))
+                else:
+                    where = "WHERE station_id = ? AND timestamp >= ?" if cutoff_iso else "WHERE station_id = ?"
+                    params = (station_id, cutoff_iso) if cutoff_iso else (station_id,)
+                    cursor = conn.execute(
+                        f"SELECT {cols} FROM readings {where} ORDER BY timestamp ASC",
+                        params,
+                    )
+                    rows = cursor.fetchall()
+
+                temp_pts = [{"t": r["timestamp"], "v": r["temperature"]} for r in rows]
+                hum_pts = [{"t": r["timestamp"], "v": r["humidity"]} for r in rows]
+                wind_pts = [{"t": r["timestamp"], "v": r[wind_col]} for r in rows]
+
+                raw_len = len(rows)
+                is_aggregated = bool(max_pts and raw_len > max_pts)
+                if max_pts:
+                    temp_pts = downsample_peak_trough(temp_pts, max_pts)
+                    hum_pts = downsample_peak_trough(hum_pts, max_pts)
+                    wind_pts = downsample_peak_trough(wind_pts, max_pts)
+
+                points = [
+                    {
+                        "t": r["timestamp"],
+                        "temperature": r["temperature"],
+                        "humidity": r["humidity"],
+                        "windspeed": r[wind_col],
+                    }
+                    for r in rows
+                ]
+                result = {
+                    "points": points,
+                    "series": {
+                        "temperature": temp_pts,
+                        "humidity": hum_pts,
+                        "windspeed": wind_pts,
+                    },
+                    "aggregated": is_aggregated,
+                    "total_points": raw_len,
+                }
+                return jsonify(result)
+
+            # Single metric query
+            db_metric = normalize_metric(metric)
+            if db_metric not in {"temperature", "humidity", "windspeed", "wind_speed"}:
+                return jsonify({"error": "Invalid metric", "points": []}), 400
+
             if since:
                 cursor = conn.execute(
                     f"""
@@ -396,26 +535,38 @@ def api_readings():
                     (station_id, max_records),
                 )
                 rows = cursor.fetchall()
-                # Reverse newest N rows so Chart.js receives chronological order (oldest -> newest)
                 points = [{"t": row["timestamp"], "v": row[db_metric]} for row in reversed(rows)]
             else:
+                where = (
+                    f"WHERE station_id = ? AND timestamp >= ? AND {db_metric} IS NOT NULL"
+                    if cutoff_iso
+                    else f"WHERE station_id = ? AND {db_metric} IS NOT NULL"
+                )
+                params = (station_id, cutoff_iso) if cutoff_iso else (station_id,)
                 cursor = conn.execute(
                     f"""
                     SELECT timestamp, {db_metric}
                     FROM readings
-                    WHERE station_id = ? AND timestamp >= ? AND {db_metric} IS NOT NULL
+                    {where}
                     ORDER BY timestamp ASC
                     """,
-                    (station_id, cutoff_iso),
+                    params,
                 )
                 rows = cursor.fetchall()
                 points = [{"t": row["timestamp"], "v": row[db_metric]} for row in rows]
 
+        raw_count = len(points)
+        is_aggregated = bool(max_pts and raw_count > max_pts)
+        if max_pts:
+            points = downsample_peak_trough(points, max_pts)
+
         range_label = f"since={since}" if since else (f"limit={limit}" if use_limit else f"range={time_range}")
-        logger.info(
-            f"Readings for {station_id}/{metric}/{range_label}: {len(points)} points"
-        )
-        return jsonify({"points": points})
+        logger.info(f"Readings for {station_id}/{metric}/{range_label}: {len(points)} points")
+        response_dict = {"points": points}
+        if is_aggregated:
+            response_dict["aggregated"] = True
+            response_dict["total_points"] = raw_count
+        return jsonify(response_dict)
 
     except Exception as e:
         logger.error(f"Error fetching readings: {e}")

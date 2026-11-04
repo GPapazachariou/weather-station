@@ -719,3 +719,149 @@ class TestReadingsSinceCursor:
         for p in points:
             assert p["t"] > cursor_ts
 
+
+# ============================================================================
+# 8. Charting & Downsampling Enhancement Tests
+# ============================================================================
+
+
+class TestGraphAndDownsamplingEnhancements:
+    """Tests for peak/trough-preserving downsampling, multi-metric queries, and expanded ranges."""
+
+    def test_downsample_peak_trough_preserves_extrema(self):
+        """Downsampling must preserve local peaks and troughs and keep chronological order."""
+        points = []
+        base = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        for i in range(100):
+            ts = (base + timedelta(minutes=i * 5)).isoformat()
+            val = 20.0 + (i % 10) * 0.5
+            points.append({"t": ts, "v": val})
+
+        # Inject extreme trough and peak
+        points[35]["v"] = -15.5
+        points[75]["v"] = 88.8
+
+        downsampled = web.downsample_peak_trough(points, max_points=20)
+        assert len(downsampled) <= 20
+        # Extrema must be preserved
+        vals = [p["v"] for p in downsampled]
+        assert -15.5 in vals
+        assert 88.8 in vals
+
+        # Timestamps must remain strictly monotonically increasing
+        ts_list = [p["t"] for p in downsampled]
+        assert ts_list == sorted(ts_list)
+
+        # Aggregation metadata attached
+        for p in downsampled:
+            assert "min" in p
+            assert "max" in p
+            assert "avg" in p
+            assert "count" in p
+            assert p["aggregated"] is True
+
+    def test_downsample_peak_trough_noop_for_small_dataset(self):
+        """Datasets with fewer points than max_points should remain unmodified."""
+        points = [{"t": f"2026-01-01T00:0{i}:00+00:00", "v": 10.0 + i} for i in range(5)]
+        downsampled = web.downsample_peak_trough(points, max_points=20)
+        assert downsampled == points
+
+    def test_api_stats_all_metrics(self, client):
+        """Stats query with metric=all should return full dataset stats for all 3 metrics."""
+        res = client.get("/api/stats?station_id=STATION-001&metric=all&range=24h")
+        assert res.status_code == 200
+        data = res.get_json()
+        assert "temperature" in data
+        assert "humidity" in data
+        assert "windspeed" in data
+
+        for metric in ["temperature", "humidity", "windspeed"]:
+            m_stats = data[metric]
+            assert m_stats["latest"] is not None
+            assert m_stats["avg"] is not None
+            assert m_stats["min"] <= m_stats["avg"] <= m_stats["max"]
+
+    def test_api_stats_extended_ranges_and_limits(self, client):
+        """Stats query should accept 1h, 7d, 30d, all, and limit 1000."""
+        for r in ["1h", "7d", "30d", "all"]:
+            res = client.get(f"/api/stats?station_id=STATION-001&metric=temperature&range={r}")
+            assert res.status_code == 200
+            assert "latest" in res.get_json()
+
+        res_limit = client.get("/api/stats?station_id=STATION-001&metric=temperature&limit=1000")
+        assert res_limit.status_code == 200
+        assert res_limit.get_json()["latest"] is not None
+
+    def test_api_readings_all_metrics(self, client):
+        """Readings query with metric=all should return aligned points and per-metric series."""
+        res = client.get("/api/readings?station_id=STATION-001&metric=all&range=24h")
+        assert res.status_code == 200
+        data = res.get_json()
+        assert "points" in data
+        assert "series" in data
+        assert "temperature" in data["series"]
+        assert "humidity" in data["series"]
+        assert "windspeed" in data["series"]
+        assert len(data["series"]["temperature"]) > 0
+
+    def test_api_readings_downsampling(self, client):
+        """Readings with downsample parameter should reduce points while marking aggregated."""
+        res = client.get("/api/readings?station_id=STATION-001&metric=temperature&range=all&downsample=10")
+        assert res.status_code == 200
+        data = res.get_json()
+        assert data.get("aggregated") is True
+        assert data.get("total_points") == 60
+        assert len(data["points"]) <= 12
+
+    def test_api_readings_extended_range_all(self, client):
+        """range=all should return all historical points for the station."""
+        res = client.get("/api/readings?station_id=STATION-001&metric=temperature&range=all")
+        assert res.status_code == 200
+        points = res.get_json()["points"]
+        assert len(points) == 60
+
+    def test_downsample_peak_trough_with_gaps_and_nulls(self):
+        """Downsampling should handle buckets with null/gap values gracefully and preserve gap markers."""
+        points = [
+            {"t": "2026-01-01T00:00:00+00:00", "v": None},
+            {"t": "2026-01-01T00:01:00+00:00", "v": None},
+            {"t": "2026-01-01T00:02:00+00:00", "v": 15.0},
+            {"t": "2026-01-01T00:03:00+00:00", "v": 25.0},
+            {"t": "2026-01-01T00:04:00+00:00", "v": 20.0},
+            {"t": "2026-01-01T00:05:00+00:00", "v": None},
+        ]
+        downsampled = web.downsample_peak_trough(points, max_points=4)
+        assert len(downsampled) <= 4
+        assert any(p["v"] is None for p in downsampled)
+
+    def test_api_readings_all_metrics_with_limit_and_since(self, client, test_db_path: Path):
+        """metric=all should work with limit and since query parameters."""
+        res_limit = client.get("/api/readings?station_id=STATION-001&metric=all&limit=10")
+        assert res_limit.status_code == 200
+        data_limit = res_limit.get_json()
+        assert len(data_limit["points"]) == 10
+        assert len(data_limit["series"]["temperature"]) == 10
+
+        # Test since query
+        conn = sqlite3.connect(str(test_db_path))
+        conn.row_factory = sqlite3.Row
+        sample = conn.execute("SELECT timestamp FROM readings WHERE station_id = 'STATION-001' LIMIT 1 OFFSET 20").fetchone()
+        conn.close()
+        since_ts = sample["timestamp"]
+
+        res_since = client.get(f"/api/readings?station_id=STATION-001&metric=all&since={quote(since_ts)}")
+        assert res_since.status_code == 200
+        data_since = res_since.get_json()
+        assert len(data_since["points"]) > 0
+        for p in data_since["points"]:
+            assert p["t"] > since_ts
+
+    def test_api_stats_all_metrics_with_limit(self, client):
+        """metric=all with limit should compute aggregates over newest N records for each metric."""
+        res = client.get("/api/stats?station_id=STATION-001&metric=all&limit=10")
+        assert res.status_code == 200
+        data = res.get_json()
+        assert data["temperature"]["latest"] is not None
+        assert data["humidity"]["latest"] is not None
+        assert data["windspeed"]["latest"] is not None
+

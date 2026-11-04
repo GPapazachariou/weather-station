@@ -144,9 +144,14 @@ docker compose logs -f
 1. Wait 10–15 seconds for the server health check to pass and data to start flowing.
 2. Open browser: **http://localhost:8000**
 3. You should see:
-   - List of active stations (`STATION-001`, `STATION-002`, `STATION-003`)
-   - Live charts showing temperature, humidity, and windspeed over time
-   - Summary statistics: latest, average, min, and max for selected metrics
+   - **Station Selector:** Seamless switching between all active stations.
+   - **Aligned Multi-Panel Exploration:** Simultaneous time-series panels for Temperature (°C), Humidity (%), and Wind Speed (m/s) with aligned time axes, synchronized tooltips, and consistent color palettes.
+   - **Intuitive Time-Range Controls:** Explore `1h`, `6h`, `24h`, `7d`, `30d`, `All History`, or `Last N Values` (10 to 1000).
+   - **Raw vs. Rolling Averages:** Independent toggles and configurable rolling window (3 to 30) with distinct visual styles.
+   - **Missing Data Gaps:** Offline periods and missing intervals are explicitly rendered as visible breaks rather than misleading interpolated lines.
+   - **Peak & Trough Preserving Downsampling:** Large historical datasets are downsampled with an extrema-preserving bucket algorithm, keeping charts responsive while preserving significant spikes and labeling aggregated buckets in tooltips.
+   - **Full-Dataset Summary Statistics:** Latest, Average, Minimum, and Maximum values computed directly from the 100% full selected dataset in SQLite.
+   - **Live Telemetry Stream:** Real-time updates via Server-Sent Events (SSE) without full page reloads.
 
 ### 4.4 Run the High-Concurrency Stress Stack (Optional)
 
