@@ -83,23 +83,6 @@ def get_db():
     return conn
 
 
-def parse_timestamp(ts):
-    """Parse ISO 8601 timestamp to timezone-aware UTC datetime."""
-    if not ts:
-        return None
-    try:
-        normalized = ts[:-1] + "+00:00" if ts.endswith("Z") else ts
-        dt = datetime.fromisoformat(normalized)
-        if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except (ValueError, TypeError):
-        try:
-            return datetime.fromtimestamp(float(ts), tz=timezone.utc)
-        except (ValueError, TypeError):
-            return None
-
-
 @app.route("/")
 def index():
     """Serve main dashboard."""
