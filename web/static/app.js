@@ -371,6 +371,7 @@ async function loadStations() {
         const stations = data.stations || [];
 
         const select = document.getElementById('station-select');
+        const previousSelection = select ? select.value : '';
 
         if (stations.length === 0) {
             console.warn('[Stations] No stations found');
@@ -380,8 +381,17 @@ async function loadStations() {
         }
 
         select.replaceChildren(...stations.map(s => new Option(s, s)));
-        select.value = stations[0];
-        console.log(`[Stations] Loaded ${stations.length} stations, selected: ${stations[0]}`);
+        
+        // Preserve current selection if still valid; otherwise select the first station
+        if (previousSelection && stations.includes(previousSelection)) {
+            select.value = previousSelection;
+        } else {
+            select.value = stations[0];
+            if (previousSelection && select.value !== previousSelection) {
+                lastReceivedId = null;
+            }
+        }
+        console.log(`[Stations] Loaded ${stations.length} stations, selected: ${select.value}`);
 
     } catch (error) {
         console.error('[Error] Failed to load stations:', error);
