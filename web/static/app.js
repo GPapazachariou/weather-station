@@ -554,9 +554,8 @@ async function fetchReadings(queryParams) {
         const metric = urlParams.get('metric');
         const range = urlParams.get('range') || '24h';
 
-        // Downsampling param for large historical datasets
-        const downsampleParam = '&downsample=350';
-        const url = `/api/readings${queryParams}${downsampleParam}`;
+        // Supply full raw sequence without server-side downsampling (S3)
+        const url = `/api/readings${queryParams}`;
         const response = await fetch(url);
         const data = await response.json();
 
@@ -572,7 +571,7 @@ async function fetchReadings(queryParams) {
             multiSeries.humidity = series.humidity || [];
             multiSeries.windspeed = series.windspeed || [];
 
-            updateMetaChips(totalPoints, data.aggregated);
+            updateMetaChips(totalPoints, totalPoints > 350);
 
             if (typeof Chart !== 'undefined') {
                 renderAlignedPanels(multiSeries, rawEnabled, rollingEnabled, windowSize, range);
@@ -582,8 +581,9 @@ async function fetchReadings(queryParams) {
         } else {
             const points = data.points || [];
             currentRawPoints = points;
+            const totalPoints = data.total_points || points.length;
 
-            updateMetaChips(data.total_points || points.length, data.aggregated);
+            updateMetaChips(totalPoints, totalPoints > 350);
 
             if (typeof Chart !== 'undefined') {
                 renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSize, range);
@@ -670,6 +670,171 @@ function insertMissingGaps(points) {
 }
 
 /**
+ * Downsample raw points while preserving sharp peak and trough extrema within buckets (S3)
+ */
+function downsamplePeakTroughClient(points, maxPoints = 350) {
+    if (!points || points.length <= maxPoints) return points;
+
+    const segments = [];
+    let currentSegment = [];
+
+    for (const p of points) {
+        if (p.v === null || p.v === undefined) {
+            if (currentSegment.length > 0) {
+                segments.push({ type: 'valid', data: currentSegment });
+                currentSegment = [];
+            }
+            if (segments.length === 0 || segments[segments.length - 1].type !== 'gap') {
+                segments.push({ type: 'gap', data: p });
+            }
+        } else {
+            currentSegment.push(p);
+        }
+    }
+    if (currentSegment.length > 0) {
+        segments.push({ type: 'valid', data: currentSegment });
+    }
+
+    const totalValid = segments.reduce((acc, seg) => seg.type === 'valid' ? acc + seg.data.length : acc, 0);
+    if (totalValid === 0) {
+        return segments.filter(s => s.type === 'gap').map(s => s.data);
+    }
+
+    const gapCount = segments.filter(s => s.type === 'gap').length;
+    const availableBudget = Math.max(2, maxPoints - gapCount);
+
+    const result = [];
+    for (const seg of segments) {
+        if (seg.type === 'gap') {
+            result.push(seg.data);
+            continue;
+        }
+
+        const data = seg.data;
+        const segBudget = Math.max(2, Math.floor(availableBudget * (data.length / totalValid)));
+        if (data.length <= segBudget || segBudget < 2) {
+            result.push(...data);
+            continue;
+        }
+
+        const numBuckets = Math.max(1, Math.floor(segBudget / 2));
+        const bucketSize = data.length / numBuckets;
+
+        for (let b = 0; b < numBuckets; b++) {
+            const startIdx = Math.floor(b * bucketSize);
+            const endIdx = b < numBuckets - 1 ? Math.floor((b + 1) * bucketSize) : data.length;
+            const bucket = data.slice(startIdx, endIdx);
+            if (bucket.length === 0) continue;
+
+            let minPt = bucket[0];
+            let maxPt = bucket[0];
+            let sum = 0;
+
+            for (const pt of bucket) {
+                sum += pt.v;
+                if (pt.v < minPt.v) minPt = pt;
+                if (pt.v > maxPt.v) maxPt = pt;
+            }
+
+            const avgVal = parseFloat((sum / bucket.length).toFixed(2));
+            const minVal = parseFloat(minPt.v.toFixed(2));
+            const maxVal = parseFloat(maxPt.v.toFixed(2));
+            const count = bucket.length;
+
+            const minTime = new Date(minPt.t).getTime();
+            const maxTime = new Date(maxPt.t).getTime();
+            const firstPt = minTime <= maxTime ? minPt : maxPt;
+            const secondPt = minTime <= maxTime ? maxPt : minPt;
+
+            result.push({
+                ...firstPt,
+                min: minVal,
+                max: maxVal,
+                avg: avgVal,
+                count: count,
+                aggregated: true
+            });
+
+            if (secondPt !== firstPt && count > 1) {
+                result.push({
+                    ...secondPt,
+                    min: minVal,
+                    max: maxVal,
+                    avg: avgVal,
+                    count: count,
+                    aggregated: true
+                });
+            }
+        }
+    }
+    return result;
+}
+
+/**
+ * Downsample rolling averages by bucket midpoint to maintain smooth trendline (S3)
+ */
+function downsampleRollingClient(points, maxPoints = 350) {
+    if (!points || points.length <= maxPoints) return points;
+
+    const segments = [];
+    let currentSegment = [];
+
+    for (const p of points) {
+        if (p.v === null || p.v === undefined) {
+            if (currentSegment.length > 0) {
+                segments.push({ type: 'valid', data: currentSegment });
+                currentSegment = [];
+            }
+            if (segments.length === 0 || segments[segments.length - 1].type !== 'gap') {
+                segments.push({ type: 'gap', data: p });
+            }
+        } else {
+            currentSegment.push(p);
+        }
+    }
+    if (currentSegment.length > 0) {
+        segments.push({ type: 'valid', data: currentSegment });
+    }
+
+    const totalValid = segments.reduce((acc, seg) => seg.type === 'valid' ? acc + seg.data.length : acc, 0);
+    if (totalValid === 0) {
+        return segments.filter(s => s.type === 'gap').map(s => s.data);
+    }
+
+    const gapCount = segments.filter(s => s.type === 'gap').length;
+    const availableBudget = Math.max(2, maxPoints - gapCount);
+
+    const result = [];
+    for (const seg of segments) {
+        if (seg.type === 'gap') {
+            result.push(seg.data);
+            continue;
+        }
+
+        const data = seg.data;
+        const segBudget = Math.max(2, Math.floor(availableBudget * (data.length / totalValid)));
+        if (data.length <= segBudget || segBudget < 2) {
+            result.push(...data);
+            continue;
+        }
+
+        const numBuckets = Math.max(1, segBudget);
+        const bucketSize = data.length / numBuckets;
+
+        for (let b = 0; b < numBuckets; b++) {
+            const startIdx = Math.floor(b * bucketSize);
+            const endIdx = b < numBuckets - 1 ? Math.floor((b + 1) * bucketSize) : data.length;
+            const bucket = data.slice(startIdx, endIdx);
+            if (bucket.length === 0) continue;
+
+            const midIdx = Math.floor(bucket.length / 2);
+            result.push(bucket[midIdx]);
+        }
+    }
+    return result;
+}
+
+/**
  * Pre-compute rolling average over FULL raw reading sequence BEFORE downsampling (S3)
  */
 function computeRollingValuesOnRawPoints(points, windowSize) {
@@ -732,11 +897,15 @@ function prepareSeriesForContinuousAxis(rawSeries, rawEnabled, rollingEnabled, w
     // 1. Calculate true rolling averages on the full raw sequence first (S3)
     const rollingSeries = rollingEnabled ? computeRollingValuesOnRawPoints(rawSeries, windowSize) : [];
 
-    // 2. Insert missing gaps on raw points (S4, S2)
-    const { points: processedRaw, gapCount: rawGaps } = insertMissingGaps(rawSeries);
-    const { points: processedRolling, gapCount: rollingGaps } = insertMissingGaps(rollingSeries);
+    // 2. Downsample for canvas display if raw sequence exceeds 350 points, preserving extrema (S3)
+    const displayRaw = rawSeries.length > 350 ? downsamplePeakTroughClient(rawSeries, 350) : rawSeries;
+    const displayRolling = rollingSeries.length > 350 ? downsampleRollingClient(rollingSeries, 350) : rollingSeries;
 
-    // 3. Map into { x: timestampMs, y: val, raw: pointRef }
+    // 3. Insert missing gaps on display points (S4, S2)
+    const { points: processedRaw, gapCount: rawGaps } = insertMissingGaps(displayRaw);
+    const { points: processedRolling, gapCount: rollingGaps } = insertMissingGaps(displayRolling);
+
+    // 4. Map into { x: timestampMs, y: val, raw: pointRef }
     const rawData = rawEnabled ? processedRaw.map(p => ({
         x: new Date(p.t).getTime(),
         y: p.v,
@@ -752,7 +921,8 @@ function prepareSeriesForContinuousAxis(rawSeries, rawEnabled, rollingEnabled, w
     return {
         rawData,
         rollingData,
-        gapCount: Math.max(rawGaps, rollingGaps)
+        gapCount: Math.max(rawGaps, rollingGaps),
+        isAggregated: rawSeries.length > 350
     };
 }
 
@@ -762,19 +932,21 @@ function prepareSeriesForContinuousAxis(rawSeries, rawEnabled, rollingEnabled, w
 function refreshAllPanelsData(seriesMap, rawEnabled, rollingEnabled, windowSize, range) {
     const { minTime, maxTime } = getCommonTimeBounds(seriesMap);
     let totalGaps = 0;
+    let anyAggregated = false;
     const metrics = ['temperature', 'humidity', 'windspeed'];
 
     for (const m of metrics) {
         const c = charts[m];
         if (!c) continue;
 
-        const { rawData, rollingData, gapCount } = prepareSeriesForContinuousAxis(
+        const { rawData, rollingData, gapCount, isAggregated } = prepareSeriesForContinuousAxis(
             seriesMap[m] || [],
             rawEnabled,
             rollingEnabled,
             windowSize
         );
         totalGaps = Math.max(totalGaps, gapCount);
+        if (isAggregated) anyAggregated = true;
 
         // Update scales with common shared bounds (S1)
         c.options.scales.x.min = minTime;
@@ -789,10 +961,8 @@ function refreshAllPanelsData(seriesMap, rawEnabled, rollingEnabled, windowSize,
         c.update('none');
     }
 
-    if (totalGaps > 0) {
-        const total = (seriesMap.temperature || []).length;
-        updateMetaChips(total, false, totalGaps);
-    }
+    const total = (seriesMap.temperature || []).length;
+    updateMetaChips(total, anyAggregated, totalGaps);
 }
 
 /**
@@ -801,18 +971,20 @@ function refreshAllPanelsData(seriesMap, rawEnabled, rollingEnabled, windowSize,
  */
 function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, range) {
     let totalGaps = 0;
+    let anyAggregated = false;
     const metrics = ['temperature', 'humidity', 'windspeed'];
     const { minTime, maxTime } = getCommonTimeBounds(seriesMap);
 
     for (const m of metrics) {
         const rawPoints = seriesMap[m] || [];
-        const { rawData, rollingData, gapCount } = prepareSeriesForContinuousAxis(
+        const { rawData, rollingData, gapCount, isAggregated } = prepareSeriesForContinuousAxis(
             rawPoints,
             rawEnabled,
             rollingEnabled,
             windowSize
         );
         totalGaps = Math.max(totalGaps, gapCount);
+        if (isAggregated) anyAggregated = true;
 
         const config = METRIC_CONFIGS[m];
         const ctx = document.getElementById(config.canvasId);
@@ -949,10 +1121,8 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
         });
     }
 
-    if (totalGaps > 0) {
-        const total = (seriesMap.temperature || []).length;
-        updateMetaChips(total, false, totalGaps);
-    }
+    const total = (seriesMap.temperature || []).length;
+    updateMetaChips(total, anyAggregated, totalGaps);
 }
 
 /**
@@ -978,16 +1148,14 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
         rollingBorder: '#1e293b'
     };
 
-    const { rawData, rollingData, gapCount } = prepareSeriesForContinuousAxis(
+    const { rawData, rollingData, gapCount, isAggregated } = prepareSeriesForContinuousAxis(
         points,
         rawEnabled,
         rollingEnabled,
         windowSize
     );
 
-    if (gapCount > 0) {
-        updateMetaChips(points.length, false, gapCount);
-    }
+    updateMetaChips(points.length, isAggregated, gapCount);
 
     let minTime = Infinity;
     let maxTime = -Infinity;
