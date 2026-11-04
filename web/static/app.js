@@ -316,18 +316,12 @@ function handleLiveReading(reading) {
             if (m === 'temperature') {
                 document.getElementById('stat-temp-latest').textContent = `${valStr} °C`;
                 document.getElementById('mini-temp-latest').textContent = `${valStr} °C`;
-                const heroTemp = document.getElementById('hero-quick-temp');
-                if (heroTemp) heroTemp.textContent = `${valStr} °C`;
             } else if (m === 'humidity') {
                 document.getElementById('stat-hum-latest').textContent = `${valStr} %`;
                 document.getElementById('mini-hum-latest').textContent = `${valStr} %`;
-                const heroHum = document.getElementById('hero-quick-hum');
-                if (heroHum) heroHum.textContent = `${valStr} %`;
             } else if (m === 'windspeed') {
                 document.getElementById('stat-wind-latest').textContent = `${valStr} m/s`;
                 document.getElementById('mini-wind-latest').textContent = `${valStr} m/s`;
-                const heroWind = document.getElementById('hero-quick-wind');
-                if (heroWind) heroWind.textContent = `${valStr} m/s`;
             }
 
             multiSeries[m].push({ t: reading.timestamp, v: numVal });
@@ -391,39 +385,16 @@ async function loadStations() {
 }
 
 /**
- * Show error banner
- */
-function showErrorBanner(msg) {
-    const banner = document.getElementById('error-banner');
-    const msgEl = document.getElementById('error-message-text');
-    if (banner) {
-        if (msgEl && msg) msgEl.textContent = msg;
-        banner.style.display = 'flex';
-    }
-}
-
-/**
- * Hide error banner
- */
-function hideErrorBanner() {
-    const banner = document.getElementById('error-banner');
-    if (banner) banner.style.display = 'none';
-}
-
-/**
  * Handle range selector change - show/hide limit selector
  */
 function onRangeChange() {
     const rangeSelect = document.getElementById('range-select').value;
     const limitSelect = document.getElementById('limit-select');
-    const limitField = document.getElementById('limit-field');
 
     if (rangeSelect === 'limit') {
-        limitSelect.style.display = 'block';
-        if (limitField) limitField.style.display = 'block';
+        limitSelect.style.display = 'inline-block';
     } else {
         limitSelect.style.display = 'none';
-        if (limitField) limitField.style.display = 'none';
     }
 
     refreshAll();
@@ -446,22 +417,6 @@ async function refreshAll() {
         const range = document.getElementById('range-select').value;
         const limitSelect = document.getElementById('limit-select');
 
-        // Update context bar station and range badges
-        const contextStation = document.getElementById('context-station-name');
-        if (contextStation) contextStation.textContent = station || 'None';
-
-        const rangeSelectElem = document.getElementById('range-select');
-        const contextRange = document.getElementById('context-range-label');
-        if (contextRange && rangeSelectElem) {
-            if (range === 'limit') {
-                const limitVal = limitSelect ? limitSelect.value : 50;
-                contextRange.textContent = `Last ${limitVal} values`;
-            } else {
-                const selectedOpt = rangeSelectElem.options[rangeSelectElem.selectedIndex];
-                contextRange.textContent = selectedOpt ? selectedOpt.textContent : range;
-            }
-        }
-
         if (!station) {
             showEmptyState();
             return;
@@ -481,9 +436,8 @@ async function refreshAll() {
             console.log(`[Refresh] ${station} / ${metric} / ${range}`);
         }
 
-        // Hide empty state and error banner on active refresh
+        // Hide empty state
         document.getElementById('empty-state').style.display = 'none';
-        hideErrorBanner();
 
         // Toggle visibility of multi-stats vs single-stats containers
         if (metric === 'all') {
@@ -577,14 +531,6 @@ function updateMultiMetricStats(data) {
     document.getElementById('mini-wind-avg').textContent = w.avg !== null && w.avg !== undefined ? `${w.avg.toFixed(2)} m/s` : '--';
     document.getElementById('mini-wind-min').textContent = w.min !== null && w.min !== undefined ? `${w.min.toFixed(2)} m/s` : '--';
     document.getElementById('mini-wind-max').textContent = w.max !== null && w.max !== undefined ? `${w.max.toFixed(2)} m/s` : '--';
-
-    // Update Hero Bar quick readings
-    const heroTemp = document.getElementById('hero-quick-temp');
-    if (heroTemp) heroTemp.textContent = t.latest !== null && t.latest !== undefined ? `${t.latest.toFixed(2)} °C` : '--';
-    const heroHum = document.getElementById('hero-quick-hum');
-    if (heroHum) heroHum.textContent = h.latest !== null && h.latest !== undefined ? `${h.latest.toFixed(2)} %` : '--';
-    const heroWind = document.getElementById('hero-quick-wind');
-    if (heroWind) heroWind.textContent = w.latest !== null && w.latest !== undefined ? `${w.latest.toFixed(2)} m/s` : '--';
 }
 
 /**
@@ -592,23 +538,11 @@ function updateMultiMetricStats(data) {
  */
 function updateSingleMetricStats(data, metric) {
     const config = METRIC_CONFIGS[metric] || { unit: '' };
-    const valFormatted = data.latest !== null && data.latest !== undefined ? `${data.latest.toFixed(2)} ${config.unit}` : '--';
-    document.getElementById('stat-latest').textContent = valFormatted;
+    document.getElementById('stat-latest').textContent = data.latest !== null && data.latest !== undefined ? `${data.latest.toFixed(2)} ${config.unit}` : '--';
     document.getElementById('stat-latest-time').textContent = data.latest_t ? formatFullTimestamp(data.latest_t) : '';
     document.getElementById('stat-avg').textContent = data.avg !== null && data.avg !== undefined ? `${data.avg.toFixed(2)} ${config.unit}` : '--';
     document.getElementById('stat-min').textContent = data.min !== null && data.min !== undefined ? `${data.min.toFixed(2)} ${config.unit}` : '--';
     document.getElementById('stat-max').textContent = data.max !== null && data.max !== undefined ? `${data.max.toFixed(2)} ${config.unit}` : '--';
-
-    if (metric === 'temperature') {
-        const heroTemp = document.getElementById('hero-quick-temp');
-        if (heroTemp) heroTemp.textContent = valFormatted;
-    } else if (metric === 'humidity') {
-        const heroHum = document.getElementById('hero-quick-hum');
-        if (heroHum) heroHum.textContent = valFormatted;
-    } else if (metric === 'windspeed' || metric === 'wind_speed') {
-        const heroWind = document.getElementById('hero-quick-wind');
-        if (heroWind) heroWind.textContent = valFormatted;
-    }
 }
 
 /**
@@ -1157,16 +1091,14 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
                 scales: {
                     y: {
                         beginAtZero: false,
-                        grid: { color: 'rgba(226, 232, 240, 0.7)' },
+                        grid: { color: 'rgba(0, 0, 0, 0.05)' },
                         title: {
                             display: true,
                             text: config.unit,
-                            color: '#64748b',
-                            font: { family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', size: 11, weight: 'bold' }
+                            font: { size: 11, weight: 'bold' }
                         },
                         ticks: {
-                            color: '#64748b',
-                            font: { family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', size: 11 }
+                            font: { size: 10 }
                         }
                     },
                     x: {
@@ -1175,11 +1107,10 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
                         max: maxTime,
                         grid: { display: false },
                         ticks: {
-                            color: '#64748b',
                             autoSkip: true,
                             maxTicksLimit: 8,
                             maxRotation: 0,
-                            font: { family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', size: 11 },
+                            font: { size: 10 },
                             callback: function(value) {
                                 return formatAxisTime(new Date(value).toISOString(), range);
                             }
@@ -1335,17 +1266,8 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
             scales: {
                 y: {
                     beginAtZero: false,
-                    grid: { color: 'rgba(226, 232, 240, 0.7)' },
-                    title: {
-                        display: true,
-                        text: config.unit,
-                        color: '#64748b',
-                        font: { family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', size: 11, weight: 'bold' }
-                    },
-                    ticks: {
-                        color: '#64748b',
-                        font: { family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', size: 11 }
-                    }
+                    grid: { color: 'rgba(0, 0, 0, 0.05)' },
+                    title: { display: true, text: config.unit }
                 },
                 x: {
                     type: 'linear',
@@ -1353,11 +1275,9 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
                     max: maxTime,
                     grid: { display: false },
                     ticks: {
-                        color: '#64748b',
                         autoSkip: true,
                         maxTicksLimit: 10,
                         maxRotation: 0,
-                        font: { family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', size: 11 },
                         callback: function(value) {
                             return formatAxisTime(new Date(value).toISOString(), range);
                         }
@@ -1397,15 +1317,6 @@ function showEmptyState() {
     document.getElementById('chart-container').style.display = 'none';
     const tableCont = document.getElementById('table-container');
     if (tableCont) tableCont.style.display = 'none';
-
-    const heroTemp = document.getElementById('hero-quick-temp');
-    if (heroTemp) heroTemp.textContent = '--';
-    const heroHum = document.getElementById('hero-quick-hum');
-    if (heroHum) heroHum.textContent = '--';
-    const heroWind = document.getElementById('hero-quick-wind');
-    if (heroWind) heroWind.textContent = '--';
-    const contextStation = document.getElementById('context-station-name');
-    if (contextStation) contextStation.textContent = 'None';
 }
 
 /**
