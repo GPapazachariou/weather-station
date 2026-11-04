@@ -150,6 +150,13 @@ CLI arguments override environment variables.
         default=float(env_connect_timeout) if env_connect_timeout else DEFAULT_CONNECT_TIMEOUT,
         help="Connection timeout in seconds"
     )
+    env_initial_seq = os.getenv("WEATHER_STATION_INITIAL_SEQ")
+    parser.add_argument(
+        "--initial-seq",
+        type=int,
+        default=int(env_initial_seq) if env_initial_seq else 0,
+        help="Initial sequence number (default: 0)"
+    )
     
     args = parser.parse_args()
     station_id = resolve_station_id(args.station_id, env_station_id)
@@ -167,6 +174,8 @@ CLI arguments override environment variables.
         parser.error("Connect timeout must be positive")
     if args.port < 0 or args.port > 65535:
         parser.error("Port must be between 0 and 65535")
+    if args.initial_seq < 0:
+        parser.error("Initial sequence number must be non-negative")
     
     return {
         "server_host": args.host,
@@ -177,12 +186,25 @@ CLI arguments override environment variables.
         "batch_interval": args.batch_interval,
         "response_timeout": args.timeout,
         "connect_timeout": args.connect_timeout,
+        "initial_seq": args.initial_seq,
         "base_backoff": DEFAULT_BASE_BACKOFF,
         "max_backoff": DEFAULT_MAX_BACKOFF,
         "backoff_jitter": DEFAULT_BACKOFF_JITTER,
         "max_buffer_records": DEFAULT_MAX_BUFFER_RECORDS,
         "drain_timeout": DEFAULT_DRAIN_TIMEOUT,
     }
+
+
+class SequenceTracker:
+    """Tracks monotonic sequence numbers for readings emitted by a station."""
+
+    def __init__(self, initial_seq: int = 0):
+        self.current_seq = initial_seq
+
+    def next_seq_range(self, count: int) -> int:
+        start = self.current_seq
+        self.current_seq += count
+        return start
 
 
 def stable_hash_int(s):
@@ -247,15 +269,17 @@ def value_for(station_id, metric):
     return round(value, 2)
 
 
-def generate_reading(station_id):
+def generate_reading(station_id, seq: int = 0):
     """
     Generate a single weather reading with deterministic mean + random noise.
     
     Args:
         station_id: Station identifier
+        seq: Non-negative monotonic sequence number
     """
     return {
         "station_id": station_id,
+        "seq": seq,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "temperature": value_for(station_id, "temperature"),
         "humidity": value_for(station_id, "humidity"),
@@ -263,15 +287,16 @@ def generate_reading(station_id):
     }
 
 
-def generate_batch(station_id, size):
+def generate_batch(station_id, size, start_seq: int = 0):
     """
-    Generate a batch of weather readings.
+    Generate a batch of weather readings with consecutive sequence numbers.
     
     Args:
         station_id: Station identifier
         size: Number of readings in batch
+        start_seq: Starting sequence number for the batch
     """
-    return [generate_reading(station_id) for _ in range(size)]
+    return [generate_reading(station_id, start_seq + i) for i in range(size)]
 
 
 def buffer_batch(buffer: deque, batch: list, max_capacity: int):
@@ -313,6 +338,20 @@ def is_backpressure_response(response: dict) -> bool:
     )
 
 
+async def fetch_latest_seq(reader, writer, station_id: str, timeout: float = 5.0) -> int | None:
+    """Query server for latest sequence number recorded for this station."""
+    req = {"request": "latest_seq", "station_id": station_id}
+    writer.write((json.dumps(req) + "\n").encode("utf-8"))
+    await writer.drain()
+    line = await asyncio.wait_for(reader.readline(), timeout=timeout)
+    if not line:
+        raise ConnectionError("Server closed connection during sequence synchronization")
+    resp = json.loads(line.decode("utf-8"))
+    if resp.get("status") == "ok":
+        return resp.get("latest_seq")
+    return None
+
+
 async def wait_backoff_period(
     wait_time: float,
     batch_interval: float,
@@ -322,6 +361,7 @@ async def wait_backoff_period(
     buffer: deque,
     max_buffer_records: int,
     shutdown_check,
+    seq_tracker: SequenceTracker | None = None,
 ):
     """Wait for wait_time seconds while periodically generating and buffering batches."""
     waited = 0.0
@@ -333,7 +373,8 @@ async def wait_backoff_period(
         # Generate and buffer a batch
         if waited >= batch_interval:
             batch_size = random.randint(batch_size_min, batch_size_max)
-            batch = generate_batch(station_id, batch_size)
+            start_seq = seq_tracker.next_seq_range(batch_size) if seq_tracker else 0
+            batch = generate_batch(station_id, batch_size, start_seq=start_seq)
 
             dropped = buffer_batch(buffer, batch, max_buffer_records)
             if dropped is not None:
@@ -377,7 +418,8 @@ async def flush_buffer(
             response = json.loads(response_line.decode('utf-8'))
 
             if response.get("status") == "ok":
-                print(f"[{station_id}] ✓ Flushed batch ({response['inserted']} readings)")
+                dups = response.get("duplicates", 0)
+                print(f"[{station_id}] ✓ Flushed batch ({response['inserted']} readings, {dups} duplicates)")
             elif is_backpressure_response(response):
                 # Put batch back at head of buffer
                 buffer.appendleft(buffered_batch)
@@ -411,9 +453,14 @@ async def send_batches(config):
     backoff_jitter = config["backoff_jitter"]
     max_buffer_records = config["max_buffer_records"]
     drain_timeout = config["drain_timeout"]
+    initial_seq = config.get("initial_seq", 0)
     
     # Buffer for storing batches when disconnected
     buffer = deque()
+    
+    # Monotonic sequence tracker
+    seq_tracker = SequenceTracker(initial_seq=initial_seq)
+    synced_initial_seq = False
     
     # Backoff state
     current_backoff = base_backoff
@@ -436,6 +483,7 @@ async def send_batches(config):
     print(f"Target: {server_host}:{server_port}")
     print(f"Batch interval: {batch_interval}s")
     print(f"Buffer limit: {max_buffer_records} records")
+    print(f"Initial seq: {initial_seq}")
     print()
     
     # Outer infinite loop - keeps client alive forever
@@ -455,6 +503,14 @@ async def send_batches(config):
             # Reset backoff on successful connection
             current_backoff = base_backoff
             
+            # If at initial state and buffer empty, try synchronizing sequence with server
+            if not synced_initial_seq and not buffer and seq_tracker.current_seq == initial_seq:
+                server_latest_seq = await fetch_latest_seq(reader, writer, station_id, response_timeout)
+                if server_latest_seq is not None:
+                    seq_tracker.current_seq = server_latest_seq + 1
+                    print(f"[{station_id}] Synchronized sequence from server: resuming at seq={seq_tracker.current_seq}")
+                synced_initial_seq = True
+            
             # Inner loop - connected state, send batches normally
             while not shutdown:
                 # If buffer has accumulated items, flush them before generating a new batch
@@ -470,7 +526,8 @@ async def send_batches(config):
                         print(f"[{station_id}] → Backing off for {wait_time:.1f}s (backoff: {current_backoff:.1f}s + jitter: {jitter:.1f}s)")
                         await wait_backoff_period(
                             wait_time, batch_interval, batch_size_min, batch_size_max,
-                            station_id, buffer, max_buffer_records, lambda: shutdown
+                            station_id, buffer, max_buffer_records, lambda: shutdown,
+                            seq_tracker=seq_tracker
                         )
                         current_backoff = calculate_backoff(current_backoff, max_backoff)
                         continue
@@ -478,9 +535,10 @@ async def send_batches(config):
                         current_backoff = base_backoff
                         print(f"[{station_id}] ✓ Buffer flushed successfully")
 
-                # Generate a batch
+                # Generate a batch with monotonic sequence numbers
                 batch_size = random.randint(batch_size_min, batch_size_max)
-                batch = generate_batch(station_id, batch_size)
+                start_seq = seq_tracker.next_seq_range(batch_size)
+                batch = generate_batch(station_id, batch_size, start_seq=start_seq)
                 
                 # Convert to JSON line
                 json_line = json.dumps(batch) + "\n"
@@ -503,7 +561,8 @@ async def send_batches(config):
                     
                     # Process response
                     if response.get("status") == "ok":
-                        print(f"[{station_id}] Batch #{batch_num}: ✓ Sent {batch_size} readings, server inserted {response['inserted']}")
+                        dups = response.get("duplicates", 0)
+                        print(f"[{station_id}] Batch #{batch_num}: ✓ Sent {batch_size} readings, server inserted {response['inserted']} (duplicates: {dups})")
                         current_backoff = base_backoff
                         batch_num += 1
                         await asyncio.sleep(batch_interval)
@@ -521,7 +580,8 @@ async def send_batches(config):
                         print(f"[{station_id}] → Backing off for {wait_time:.1f}s (backoff: {current_backoff:.1f}s + jitter: {jitter:.1f}s)")
                         await wait_backoff_period(
                             wait_time, batch_interval, batch_size_min, batch_size_max,
-                            station_id, buffer, max_buffer_records, lambda: shutdown
+                            station_id, buffer, max_buffer_records, lambda: shutdown,
+                            seq_tracker=seq_tracker
                         )
                         current_backoff = calculate_backoff(current_backoff, max_backoff)
                     else:
@@ -558,7 +618,8 @@ async def send_batches(config):
                 
                 await wait_backoff_period(
                     wait_time, batch_interval, batch_size_min, batch_size_max,
-                    station_id, buffer, max_buffer_records, lambda: shutdown
+                    station_id, buffer, max_buffer_records, lambda: shutdown,
+                    seq_tracker=seq_tracker
                 )
                 
                 # Exponential backoff - double the backoff time

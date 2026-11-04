@@ -49,12 +49,12 @@ def create_test_db(db_path: Path):
         temp = 20.0 + (i % 100) * 0.1
         hum = 50.0 + (i % 50) * 0.5
         wind = 5.0 + (i % 20) * 0.2
-        records.append(("STATION-001", ts_str, temp, hum, wind))
+        records.append(("STATION-001", i + 1, ts_str, temp, hum, wind))
         
     conn.executemany(
         """
-        INSERT INTO readings (station_id, timestamp, temperature, humidity, windspeed)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO readings (station_id, seq, timestamp, temperature, humidity, windspeed)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
         records
     )

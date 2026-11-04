@@ -47,6 +47,7 @@ async def test_producer_ingest():
     batch = [
         {
             "station_id": "STATION-001",
+            "seq": 1,
             "timestamp": now,
             "temperature": 22.5,
             "humidity": 60,
@@ -54,6 +55,7 @@ async def test_producer_ingest():
         },
         {
             "station_id": "STATION-002",
+            "seq": 1,
             "timestamp": now,
             "temperature": 18.3,
             "humidity": 75,
@@ -65,7 +67,7 @@ async def test_producer_ingest():
     if response:
         print(f"  Response: {json.dumps(response, indent=2)}")
         if response.get("status") == "ok" and "inserted" in response:
-            print(f"  ✓ Producer batch ingest successful: {response['inserted']} readings inserted")
+            print(f"  ✓ Producer batch ingest successful: {response['inserted']} readings inserted (duplicates: {response.get('duplicates', 0)})")
             return True
     
     print("  ✗ Producer batch ingest failed")
@@ -175,9 +177,43 @@ async def test_consumer_recent_station():
     return False
 
 
+async def test_consumer_latest_seq():
+    """Test consumer request: latest_seq for specific station."""
+    print("\n=== Test 8: Consumer Request - Latest Seq ===")
+    
+    request = {"request": "latest_seq", "station_id": "STATION-001"}
+    response = await send_request(request)
+    
+    if response:
+        print(f"  Response: {json.dumps(response, indent=2)}")
+        if response.get("status") == "ok" and "latest_seq" in response:
+            print(f"  ✓ Consumer latest_seq request successful: latest_seq={response['latest_seq']}")
+            return True
+    
+    print("  ✗ Consumer latest_seq request failed")
+    return False
+
+
+async def test_consumer_since():
+    """Test consumer request: replay since sequence number."""
+    print("\n=== Test 9: Consumer Request - Since (Replay) ===")
+    
+    request = {"request": "since", "station_id": "STATION-001", "seq": 0, "limit": 10}
+    response = await send_request(request)
+    
+    if response:
+        print(f"  Response: {json.dumps(response, indent=2)}")
+        if response.get("status") == "ok" and "readings" in response:
+            print(f"  ✓ Consumer since replay request successful: {len(response['readings'])} readings returned")
+            return True
+    
+    print("  ✗ Consumer since replay request failed")
+    return False
+
+
 async def test_invalid_consumer_request():
     """Test consumer request with unknown type."""
-    print("\n=== Test 8: Invalid Consumer Request ===")
+    print("\n=== Test 10: Invalid Consumer Request ===")
     
     request = {"request": "unknown_type"}
     response = await send_request(request)
@@ -207,6 +243,8 @@ async def main():
         test_consumer_recent,
         test_consumer_recent_limit,
         test_consumer_recent_station,
+        test_consumer_latest_seq,
+        test_consumer_since,
         test_invalid_consumer_request,
     ]
     

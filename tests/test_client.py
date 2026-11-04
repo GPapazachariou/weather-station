@@ -71,6 +71,8 @@ class TestSensorGeneration:
         """Generated reading must pass protocol.validate_batch without errors."""
         reading = client.generate_reading("STATION-TEST-001")
         assert reading["station_id"] == "STATION-TEST-001"
+        assert "seq" in reading
+        assert reading["seq"] == 0
         assert "timestamp" in reading
         assert "temperature" in reading
         assert "humidity" in reading
@@ -79,11 +81,32 @@ class TestSensorGeneration:
         # Assert full validation passes
         assert validate_batch([reading]) is None
 
+    def test_generate_reading_custom_seq(self):
+        """generate_reading(station_id, seq) correctly sets seq."""
+        reading = client.generate_reading("STATION-TEST-001", seq=42)
+        assert reading["seq"] == 42
+        assert validate_batch([reading]) is None
+
     def test_generate_batch_size_and_validity(self):
         """generate_batch(size) generates requested quantity, all valid."""
         batch = client.generate_batch("STATION-TEST-002", 5)
         assert len(batch) == 5
         assert validate_batch(batch) is None
+
+    def test_generate_batch_monotonic_seq(self):
+        """generate_batch assigns consecutive sequence numbers starting from start_seq."""
+        batch = client.generate_batch("STATION-TEST-002", 5, start_seq=10)
+        assert len(batch) == 5
+        assert [r["seq"] for r in batch] == [10, 11, 12, 13, 14]
+        assert validate_batch(batch) is None
+
+    def test_sequence_tracker_monotonicity(self):
+        """SequenceTracker correctly dispenses contiguous sequence ranges."""
+        tracker = client.SequenceTracker(initial_seq=100)
+        assert tracker.next_seq_range(5) == 100
+        assert tracker.current_seq == 105
+        assert tracker.next_seq_range(3) == 105
+        assert tracker.current_seq == 108
 
 
 # ============================================================================
@@ -462,3 +485,140 @@ class TestClientBackpressure:
             await writer.wait_closed()
             server.close()
             await server.wait_closed()
+
+    async def test_wait_backoff_period_with_sequence_tracker(self):
+        """wait_backoff_period increments SequenceTracker monotonically across buffered batches."""
+        buf = deque()
+        tracker = client.SequenceTracker(initial_seq=50)
+
+        await client.wait_backoff_period(
+            wait_time=0.12,
+            batch_interval=0.04,
+            batch_size_min=2,
+            batch_size_max=2,
+            station_id="STN-SEQ-TEST",
+            buffer=buf,
+            max_buffer_records=10,
+            shutdown_check=lambda: False,
+            seq_tracker=tracker,
+        )
+
+        assert len(buf) >= 2
+        batch0 = buf[0]
+        batch1 = buf[1]
+        assert batch0[0]["seq"] == 50
+        assert batch0[1]["seq"] == 51
+        assert batch1[0]["seq"] == 52
+        assert batch1[1]["seq"] == 53
+        assert tracker.current_seq >= 54
+
+    async def test_fetch_latest_seq_roundtrip(self):
+        """fetch_latest_seq queries latest_seq from server and parses response."""
+        import asyncio
+        import json
+
+        async def mock_handler(reader, writer):
+            line = await reader.readline()
+            req = json.loads(line.decode())
+            assert req["request"] == "latest_seq"
+            assert req["station_id"] == "STN-TEST"
+            resp = {"status": "ok", "station_id": "STN-TEST", "latest_seq": 88}
+            writer.write((json.dumps(resp) + "\n").encode())
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        server = await asyncio.start_server(mock_handler, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+
+        try:
+            seq = await client.fetch_latest_seq(reader, writer, "STN-TEST", timeout=2.0)
+            assert seq == 88
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            server.close()
+            await server.wait_closed()
+
+    async def test_disconnect_and_reconnection_idempotency_simulation(self, tmp_path):
+        """
+        Acceptance Criteria: Client disconnect / reconnection simulations under stress
+        show 0 duplicate records in database when at-least-once retries resend batches.
+        """
+        import asyncio
+        import json
+
+        import aiosqlite
+
+        from server import app
+
+        db_file = tmp_path / "idempotent_test.db"
+        app.DB_FILE = str(db_file)
+        await app.init_database()
+        app.write_queue = asyncio.Queue()
+        writer_task = asyncio.create_task(app.db_writer_task())
+
+        tcp_server = await asyncio.start_server(app.handle_client, "127.0.0.1", 0)
+        port = tcp_server.sockets[0].getsockname()[1]
+
+        buffer = deque()
+        tracker = client.SequenceTracker(initial_seq=1)
+
+        # 1. Generate 3 batches with consecutive monotonic sequence numbers
+        batch_1 = client.generate_batch("STN-RECONNECT", 2, start_seq=tracker.next_seq_range(2))
+        batch_2 = client.generate_batch("STN-RECONNECT", 2, start_seq=tracker.next_seq_range(2))
+        batch_3 = client.generate_batch("STN-RECONNECT", 2, start_seq=tracker.next_seq_range(2))
+
+        try:
+            # First connection: send batch 1 and batch 2
+            r1, w1 = await asyncio.open_connection("127.0.0.1", port)
+            w1.write((json.dumps(batch_1) + "\n").encode())
+            await w1.drain()
+            resp1 = json.loads((await r1.readline()).decode())
+            assert resp1["status"] == "ok"
+            assert resp1["inserted"] == 2
+            assert resp1["duplicates"] == 0
+
+            # Batch 2 is sent, server writes it, but connection drops abruptly before ACK is read!
+            w1.write((json.dumps(batch_2) + "\n").encode())
+            await w1.drain()
+            # Give server a moment to ingest
+            await asyncio.sleep(0.05)
+            # Abruptly close socket (simulating network partition / crash before ACK)
+            w1.close()
+            await w1.wait_closed()
+
+            # Client buffer recovers batch_2 (at-least-once retry policy) and also has batch_3
+            buffer.append(batch_2)
+            buffer.append(batch_3)
+
+            # Reconnection: flush buffer to server
+            r2, w2 = await asyncio.open_connection("127.0.0.1", port)
+            status, _ = await client.flush_buffer(
+                r2, w2, buffer, "STN-RECONNECT", drain_timeout=5.0, response_timeout=5.0, shutdown_check=lambda: False
+            )
+            assert status == "ok"
+            assert len(buffer) == 0
+            w2.close()
+            await w2.wait_closed()
+
+            # Verify database: exactly 6 records total (batch 1, 2, 3), ZERO duplicates!
+            async with aiosqlite.connect(str(db_file)) as db:
+                cursor = await db.execute(
+                    "SELECT seq, COUNT(*) FROM readings WHERE station_id = 'STN-RECONNECT' GROUP BY seq"
+                )
+                rows = await cursor.fetchall()
+                # Each seq 1..6 must appear EXACTLY once
+                assert len(rows) == 6
+                assert [r[0] for r in rows] == [1, 2, 3, 4, 5, 6]
+                assert all(r[1] == 1 for r in rows)
+
+                cursor = await db.execute("SELECT COUNT(*) FROM readings WHERE station_id = 'STN-RECONNECT'")
+                total_count = (await cursor.fetchone())[0]
+                assert total_count == 6
+        finally:
+            tcp_server.close()
+            await tcp_server.wait_closed()
+            await app.write_queue.put(app._WRITER_SENTINEL)
+            await writer_task
