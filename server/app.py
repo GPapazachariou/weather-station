@@ -10,7 +10,7 @@ import signal
 from pathlib import Path
 
 import aiosqlite
-from protocol import MAX_LINE_SIZE, validate_batch
+from protocol import MAX_LINE_SIZE, normalize_utc_timestamp, validate_batch
 
 # Database configuration - use environment variable with absolute path fallback
 DB_FILE = os.getenv("DB_PATH", "/app/data/weather.db")
@@ -120,13 +120,13 @@ async def db_writer_task():
                         [
                             (
                                 reading["station_id"],
-                                reading["timestamp"],
+                                normalize_utc_timestamp(reading["timestamp"]),
                                 reading["temperature"],
                                 reading["humidity"],
-                                reading["windspeed"]
+                                reading["windspeed"],
                             )
                             for reading in batch
-                        ]
+                        ],
                     )
                     await db_connection.commit()
                     
@@ -165,13 +165,13 @@ async def db_writer_task():
                     [
                         (
                             reading["station_id"],
-                            reading["timestamp"],
+                            normalize_utc_timestamp(reading["timestamp"]),
                             reading["temperature"],
                             reading["humidity"],
-                            reading["windspeed"]
+                            reading["windspeed"],
                         )
                         for reading in batch
-                    ]
+                    ],
                 )
                 await db_connection.commit()
                 if not result_future.done():

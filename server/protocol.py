@@ -4,7 +4,7 @@ Defines protocol constants and validation for weather data batches.
 """
 
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Protocol limits
 MAX_LINE_SIZE = 65536  # Maximum size of a single line (bytes)
@@ -19,6 +19,19 @@ WINDSPEED_MIN = 0
 WINDSPEED_MAX = 50
 
 
+def normalize_utc_timestamp(ts_str: str) -> str:
+    """
+    Normalize an ISO-8601 timestamp string to a canonical UTC ISO-8601 string.
+    Converts 'Z' suffix or explicit timezone offsets to +00:00 UTC.
+    Assumes naive timestamps are UTC.
+    """
+    normalized = ts_str[:-1] + "+00:00" if ts_str.endswith(("Z", "z")) else ts_str
+    dt = datetime.fromisoformat(normalized)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
 def validate_timestamp(timestamp_str: str) -> None:
     """
     Validate timestamp is in valid ISO 8601 format.
@@ -28,8 +41,12 @@ def validate_timestamp(timestamp_str: str) -> None:
     if not isinstance(timestamp_str, str):
         raise ValueError("timestamp must be a string")
     
-    # Normalize 'Z' suffix to '+00:00' for fromisoformat compatibility
-    normalized = timestamp_str.replace('Z', '+00:00') if timestamp_str.endswith('Z') else timestamp_str
+    # Normalize 'Z' or 'z' suffix to '+00:00' for fromisoformat compatibility
+    normalized = (
+        timestamp_str[:-1] + "+00:00"
+        if timestamp_str.endswith(("Z", "z"))
+        else timestamp_str
+    )
     
     try:
         datetime.fromisoformat(normalized)

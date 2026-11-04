@@ -19,6 +19,7 @@ from protocol import (
     TEMPERATURE_MIN,
     WINDSPEED_MAX,
     WINDSPEED_MIN,
+    normalize_utc_timestamp,
     validate_batch,
     validate_finite_number,
     validate_timestamp,
@@ -84,6 +85,33 @@ class TestTimestampValidation:
         """Non-string inputs should raise ValueError indicating string requirement."""
         with pytest.raises(ValueError, match="timestamp must be a string"):
             validate_timestamp(non_string)
+
+
+class TestNormalizeUtcTimestamp:
+    """Tests for normalize_utc_timestamp()."""
+
+    @pytest.mark.parametrize(
+        ("input_ts", "expected_normalized"),
+        [
+            ("2026-10-02T01:00:00Z", "2026-10-02T01:00:00+00:00"),
+            ("2026-10-02T01:00:00z", "2026-10-02T01:00:00+00:00"),
+            ("2026-10-02T04:00:00+03:00", "2026-10-02T01:00:00+00:00"),
+            ("2026-10-02T01:00:00-05:00", "2026-10-02T06:00:00+00:00"),
+            ("2026-10-02T01:00:00.123456Z", "2026-10-02T01:00:00.123456+00:00"),
+            ("2026-10-02T03:30:00.500000+02:30", "2026-10-02T01:00:00.500000+00:00"),
+            ("2026-10-02T01:00:00", "2026-10-02T01:00:00+00:00"),
+            ("2026-10-02T01:00:00+00:00", "2026-10-02T01:00:00+00:00"),
+        ],
+    )
+    def test_normalize_utc_timestamp(self, input_ts, expected_normalized):
+        """Timestamps in various ISO formats should normalize to canonical UTC ISO-8601."""
+        assert normalize_utc_timestamp(input_ts) == expected_normalized
+
+    def test_normalize_is_idempotent(self):
+        """Normalizing an already normalized timestamp should produce the same string."""
+        raw = "2026-10-02T04:00:00+03:00"
+        normalized = normalize_utc_timestamp(raw)
+        assert normalize_utc_timestamp(normalized) == normalized
 
 
 # ============================================================================

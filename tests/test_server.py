@@ -184,6 +184,94 @@ class TestWriterQueue:
             total = (await cursor.fetchone())[0]
             assert total == 50
 
+    async def test_enqueue_batch_normalizes_timestamps_to_utc_iso8601(self, server_test_db: Path):
+        """Batch ingestion normalizes timestamps to UTC ISO-8601 and fixes SQLite string filtering."""
+        await app.init_database()
+
+        app.write_queue = asyncio.Queue()
+        writer = asyncio.create_task(app.db_writer_task())
+
+        batch = [
+            # 1. 'Z' suffix (1 AM UTC)
+            {
+                "station_id": "NORM-STN",
+                "timestamp": "2026-10-02T01:00:00Z",
+                "temperature": 20.0,
+                "humidity": 50.0,
+                "windspeed": 5.0,
+            },
+            # 2. +03:00 timezone offset (4 AM +03:00 == 1 AM UTC)
+            {
+                "station_id": "NORM-STN",
+                "timestamp": "2026-10-02T04:00:00+03:00",
+                "temperature": 21.0,
+                "humidity": 55.0,
+                "windspeed": 6.0,
+            },
+            # 3. -05:00 timezone offset (1 AM -05:00 == 6 AM UTC)
+            {
+                "station_id": "NORM-STN",
+                "timestamp": "2026-10-02T01:00:00-05:00",
+                "temperature": 22.0,
+                "humidity": 60.0,
+                "windspeed": 7.0,
+            },
+            # 4. Naive timestamp (assumed UTC)
+            {
+                "station_id": "NORM-STN",
+                "timestamp": "2026-10-02T03:00:00",
+                "temperature": 23.0,
+                "humidity": 65.0,
+                "windspeed": 8.0,
+            },
+        ]
+
+        try:
+            inserted = await app.enqueue_batch(batch)
+            assert inserted == 4
+        finally:
+            await app.write_queue.put(app._WRITER_SENTINEL)
+            await writer
+
+        async with aiosqlite.connect(str(server_test_db)) as db:
+            cursor = await db.execute(
+                "SELECT id, timestamp FROM readings WHERE station_id = 'NORM-STN' ORDER BY id ASC"
+            )
+            rows = await cursor.fetchall()
+            timestamps = [row[1] for row in rows]
+
+            # Verify all stored timestamps are canonical UTC ISO-8601 strings
+            assert timestamps == [
+                "2026-10-02T01:00:00+00:00",
+                "2026-10-02T01:00:00+00:00",
+                "2026-10-02T06:00:00+00:00",
+                "2026-10-02T03:00:00+00:00",
+            ]
+
+            # Test SQLite lexicographical filtering:
+            # 1. Subsecond cutoff anomaly:
+            # Cutoff is 01:00:00.123456+00:00.
+            # Readings at 01:00:00+00:00 should NOT match.
+            # (Without normalization, 'Z' > '.' caused raw '...Z' to wrongly match).
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM readings WHERE station_id = 'NORM-STN' AND timestamp >= ?",
+                ("2026-10-02T01:00:00.123456+00:00",),
+            )
+            count = (await cursor.fetchone())[0]
+            # Only the 03:00:00 and 06:00:00 readings should match (2 readings)
+            assert count == 2
+
+            # 2. Non-UTC offset anomaly:
+            # Cutoff is 02:00:00 UTC.
+            # Reading with raw timestamp "2026-10-02T04:00:00+03:00" is 01:00:00 UTC.
+            # It should NOT match cutoff >= 02:00:00.
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM readings WHERE station_id = 'NORM-STN' AND timestamp >= ?",
+                ("2026-10-02T02:00:00+00:00",),
+            )
+            count = (await cursor.fetchone())[0]
+            assert count == 2
+
 
 # ============================================================================
 # 4. Consumer Request Protocol Handlers Tests
