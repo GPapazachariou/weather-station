@@ -191,42 +191,72 @@ def api_stats():
                     """,
                     (station_id, max_records),
                 )
+                rows = cursor.fetchall()
+                values = [row[db_metric] for row in rows]
+                latest = values[0] if values else None
+                latest_t = rows[0]["timestamp"] if rows else None
+                point_count = len(values)
+
+                # Calculate stats
+                if values:
+                    result = {
+                        "latest": round(latest, 2),
+                        "latest_t": latest_t,
+                        "avg": round(sum(values) / len(values), 2),
+                        "min": round(min(values), 2),
+                        "max": round(max(values), 2),
+                    }
+                else:
+                    result = {
+                        "latest": None,
+                        "latest_t": None,
+                        "avg": None,
+                        "min": None,
+                        "max": None,
+                    }
             else:
-                cursor = conn.execute(
+                agg_cursor = conn.execute(
                     f"""
-                    SELECT timestamp, {db_metric}
+                    SELECT AVG({db_metric}), MIN({db_metric}), MAX({db_metric}), COUNT(*)
                     FROM readings
                     WHERE station_id = ? AND timestamp >= ? AND {db_metric} IS NOT NULL
-                    ORDER BY timestamp DESC
                     """,
                     (station_id, cutoff_iso),
                 )
-            rows = cursor.fetchall()
+                avg_val, min_val, max_val, point_count = agg_cursor.fetchone()
 
-        values = [row[db_metric] for row in rows]
-        latest = values[0] if values else None
-        latest_t = rows[0]["timestamp"] if rows else None
-
-        # Calculate stats
-        if values:
-            result = {
-                "latest": round(latest, 2),
-                "latest_t": latest_t,
-                "avg": round(sum(values) / len(values), 2),
-                "min": round(min(values), 2),
-                "max": round(max(values), 2),
-            }
-        else:
-            result = {
-                "latest": None,
-                "latest_t": None,
-                "avg": None,
-                "min": None,
-                "max": None,
-            }
+                if point_count > 0 and avg_val is not None:
+                    latest_cursor = conn.execute(
+                        f"""
+                        SELECT timestamp, {db_metric}
+                        FROM readings
+                        WHERE station_id = ? AND timestamp >= ? AND {db_metric} IS NOT NULL
+                        ORDER BY timestamp DESC
+                        LIMIT 1
+                        """,
+                        (station_id, cutoff_iso),
+                    )
+                    latest_row = latest_cursor.fetchone()
+                    latest = latest_row[db_metric] if latest_row else None
+                    latest_t = latest_row["timestamp"] if latest_row else None
+                    result = {
+                        "latest": round(latest, 2) if latest is not None else None,
+                        "latest_t": latest_t,
+                        "avg": round(avg_val, 2),
+                        "min": round(min_val, 2),
+                        "max": round(max_val, 2),
+                    }
+                else:
+                    result = {
+                        "latest": None,
+                        "latest_t": None,
+                        "avg": None,
+                        "min": None,
+                        "max": None,
+                    }
 
         range_label = f"limit={limit}" if use_limit else f"range={time_range}"
-        logger.info(f"Stats for {station_id}/{metric}/{range_label}: {len(values)} points")
+        logger.info(f"Stats for {station_id}/{metric}/{range_label}: {point_count} points")
         return jsonify(result)
 
     except Exception as e:
