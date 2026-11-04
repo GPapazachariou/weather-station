@@ -641,6 +641,22 @@ weather-station/
 
 ## 11. Reliability & Recovery
 
+**Verified failure recovery:** The [delivery guarantees and recovery guide](docs/reliability.md)
+explains commit-before-ACK, idempotent replay, transient-error retries, bounded
+buffering, and shutdown behavior. Its [Docker-generated report](docs/evidence/recovery.json)
+reconciles 12 unique readings with zero missing or duplicate rows after lost
+acknowledgments, outage buffering, graceful restarts, and a server-process crash.
+
+```bash
+docker build -f Dockerfile.verify -t weather-portfolio-verify .
+docker run --rm weather-portfolio-verify pytest -q
+docker run --rm weather-portfolio-verify python scripts/verify_recovery.py
+```
+
+The client buffer is in memory and drops oldest batches when its 1,000-reading
+capacity is exceeded. The recovery check covers process/network failures, not
+client-process durability or host power loss. Use one active producer per station ID.
+
 - **Server Restart & Persistence:** The Docker volume (`weather-data`) preserves SQLite data across container restarts. On startup, the server ensures the schema and indexes exist, enables WAL mode, and resumes accepting writes.
 - **Client Resilience:** Clients automatically reconnect using exponential backoff with random jitter (`1s` base up to `60s` max). While disconnected, generated batches are stored in a bounded local FIFO buffer (dropping the oldest batches if capacity is exceeded) and flushed in order upon reconnection.
 - **Stateless Web UI:** The Flask web application queries SQLite on each request and gracefully tolerates an empty or uninitialized database by returning empty lists/null metrics rather than 500 errors.

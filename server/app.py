@@ -30,6 +30,7 @@ shutdown_event = None
 server = None
 writer_task = None
 db_connection = None
+client_tasks = set()
 
 # Sentinel to signal writer task to exit
 _WRITER_SENTINEL = (None, None)
@@ -161,6 +162,7 @@ async def db_writer_task():
                         result_future.set_result({"inserted": inserted, "duplicates": duplicates})
                     
                 except Exception as e:
+                    await db_connection.rollback()
                     # Signal failure only if not already done
                     if not result_future.done():
                         result_future.set_exception(e)
@@ -206,6 +208,7 @@ async def db_writer_task():
                 if not result_future.done():
                     result_future.set_result({"inserted": inserted, "duplicates": duplicates})
             except Exception as e:
+                await db_connection.rollback()
                 if not result_future.done():
                     result_future.set_exception(e)
         
@@ -418,15 +421,19 @@ async def handle_client(reader, writer):
     unbounded line buffering. Oversized lines trigger LimitOverrunError.
     """
     addr = writer.get_extra_info('peername')
+    task = asyncio.current_task()
+    client_tasks.add(task)
     print(f"Client connected: {addr}")
     
     try:
-        while True:
+        while shutdown_event is None or not shutdown_event.is_set():
             # Read one line (one batch)
             # The stream reader's limit=MAX_LINE_SIZE+1 enforces max size
             try:
                 line = await reader.readline()
-            except asyncio.LimitOverrunError:
+                if len(line) > MAX_LINE_SIZE:
+                    raise ValueError("line_too_long")
+            except (asyncio.LimitOverrunError, ValueError):
                 # Line exceeds MAX_LINE_SIZE
                 response = {"status": "error", "reason": "line_too_long"}
                 writer.write((json.dumps(response) + "\n").encode('utf-8'))
@@ -435,6 +442,8 @@ async def handle_client(reader, writer):
             
             # Connection closed
             if not line:
+                break
+            if shutdown_event is not None and shutdown_event.is_set():
                 break
             
             try:
@@ -490,7 +499,7 @@ async def handle_client(reader, writer):
 
             except TimeoutError as e:
                 # Writer ACK timeout
-                response = {"status": "error", "reason": f"server_error: {str(e)}"}
+                response = {"status": "error", "code": "retryable", "reason": f"server_error: {str(e)}"}
                 writer.write((json.dumps(response) + "\n").encode('utf-8'))
                 await writer.drain()
                 print(f"Writer ACK timeout for {addr}: {e}")
@@ -508,6 +517,11 @@ async def handle_client(reader, writer):
                 writer.write((json.dumps(response) + "\n").encode('utf-8'))
                 await writer.drain()
                 
+            except aiosqlite.Error as e:
+                response = {"status": "error", "code": "retryable", "reason": f"server_error: {str(e)}"}
+                writer.write((json.dumps(response) + "\n").encode('utf-8'))
+                await writer.drain()
+
             except Exception as e:
                 # Other errors - do not insert anything
                 response = {"status": "error", "reason": f"server_error: {str(e)}"}
@@ -518,9 +532,13 @@ async def handle_client(reader, writer):
         print(f"Error handling client {addr}: {e}")
     
     finally:
+        client_tasks.discard(task)
         print(f"Client disconnected: {addr}")
         writer.close()
-        await writer.wait_closed()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
 
 
 async def shutdown_handler(signum):
@@ -576,8 +594,7 @@ async def main():
     
     try:
         # Keep server running until shutdown
-        async with server:
-            await server.serve_forever()
+        await shutdown_event.wait()
     except KeyboardInterrupt:
         pass
     finally:
@@ -586,6 +603,20 @@ async def main():
         
         # Close listening socket (stop accepting new connections)
         server.close()
+        shutdown_event.set()
+
+        # Finish in-flight handlers before placing the FIFO writer sentinel.
+        # Idle readers are cancelled after this bounded grace period.
+        if client_tasks:
+            _, pending = await asyncio.wait(
+                list(client_tasks), timeout=WRITE_ENQUEUE_TIMEOUT + WRITE_ACK_TIMEOUT + 1
+            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        # Python 3.12+ also waits for active connections here, so this must
+        # follow handler cleanup rather than precede the cancellation deadline.
         await server.wait_closed()
         print("Server socket closed")
         
