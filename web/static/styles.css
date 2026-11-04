@@ -148,6 +148,66 @@ header h1 {
     box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
 }
 
+/* Toggle label controls */
+.toggle-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: white;
+    border-radius: 8px;
+    font-size: 0.95em;
+    font-weight: 500;
+    color: #334155;
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.2s ease;
+}
+
+.toggle-label:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+}
+
+.toggle-label input[type="checkbox"] {
+    width: 17px;
+    height: 17px;
+    cursor: pointer;
+    accent-color: #667eea;
+}
+
+/* Data Metadata Bar */
+.meta-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+
+.meta-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 12px;
+    border-radius: 14px;
+    font-size: 0.82em;
+    font-weight: 600;
+    background: rgba(255, 255, 255, 0.85);
+    color: #475569;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+}
+
+.meta-chip-info {
+    background: #e0f2fe;
+    color: #0369a1;
+    border: 1px solid #bae6fd;
+}
+
+.meta-chip-warning {
+    background: #fef3c7;
+    color: #b45309;
+    border: 1px solid #fde68a;
+}
+
 /* Empty State */
 .empty-state {
     background: white;
@@ -168,57 +228,198 @@ header h1 {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 15px;
-    margin-bottom: 30px;
+    margin-bottom: 25px;
+}
+
+.multi-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 15px;
+    margin-bottom: 25px;
 }
 
 .stat-card {
     background: white;
     border-radius: 12px;
-    padding: 20px;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-    text-align: center;
-    transition: transform 0.3s ease, box-shadow 0.3s ease;
+    padding: 18px 20px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    border-top: 4px solid #667eea;
+}
+
+.stat-card.temp-card {
+    border-top-color: #ef4444;
+}
+
+.stat-card.hum-card {
+    border-top-color: #0284c7;
+}
+
+.stat-card.wind-card {
+    border-top-color: #059669;
 }
 
 .stat-card:hover {
-    transform: translateY(-4px);
-    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
+    transform: translateY(-3px);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.12);
+}
+
+.stat-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.stat-icon {
+    font-size: 1.2em;
 }
 
 .stat-label {
-    color: #999;
-    font-size: 0.9em;
+    color: #64748b;
+    font-size: 0.85em;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    margin-bottom: 10px;
 }
 
 .stat-value {
-    font-size: 2em;
-    font-weight: bold;
-    color: #667eea;
-    margin-bottom: 5px;
+    font-size: 2.2em;
+    font-weight: 700;
+    color: #1e293b;
+    line-height: 1.1;
+    margin-bottom: 8px;
+}
+
+.temp-card .stat-value {
+    color: #dc2626;
+}
+
+.hum-card .stat-value {
+    color: #0284c7;
+}
+
+.wind-card .stat-value {
+    color: #059669;
 }
 
 .stat-time {
     font-size: 0.8em;
-    color: #ccc;
+    color: #94a3b8;
 }
 
-/* Chart Section */
+.stat-subvalues {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 0.82em;
+    color: #64748b;
+    border-top: 1px solid #f1f5f9;
+    padding-top: 8px;
+    margin-top: 4px;
+}
+
+.stat-subvalues strong {
+    color: #334155;
+}
+
+/* Aligned Multi-Panel Layout */
+.multi-panels-section {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    margin-bottom: 30px;
+}
+
+.panel-card {
+    background: white;
+    border-radius: 12px;
+    padding: 16px 20px 20px 20px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08);
+}
+
+.panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #f1f5f9;
+}
+
+.panel-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.panel-name {
+    font-size: 1.1em;
+    font-weight: 700;
+    color: #1e293b;
+}
+
+.panel-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.temp-dot {
+    background: #ef4444;
+}
+
+.hum-dot {
+    background: #0284c7;
+}
+
+.wind-dot {
+    background: #059669;
+}
+
+.unit-badge {
+    background: #f1f5f9;
+    color: #475569;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 0.8em;
+    font-weight: 600;
+}
+
+.panel-mini-stats {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 0.84em;
+    color: #64748b;
+}
+
+.panel-mini-stats strong {
+    color: #1e293b;
+}
+
+.panel-chart-wrapper {
+    position: relative;
+    height: 250px;
+    width: 100%;
+}
+
+/* Single Chart Section */
 .chart-section {
     background: white;
     border-radius: 12px;
     padding: 25px;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08);
     margin-bottom: 30px;
     position: relative;
-    height: 400px;
+    height: 420px;
 }
 
 #data-chart {
-    max-height: 350px;
+    max-height: 370px;
 }
 
 .loading {
@@ -265,11 +466,25 @@ header h1 {
 
 /* Responsive */
 @media (max-width: 768px) {
+    body {
+        padding: 12px;
+    }
+
+    header {
+        padding: 20px;
+        margin-bottom: 20px;
+    }
+
     header h1 {
         font-size: 1.6em;
     }
 
     .controls-section {
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
+
+    .multi-stats-grid {
         grid-template-columns: 1fr;
     }
 
@@ -278,10 +493,40 @@ header h1 {
     }
 
     .stat-value {
-        font-size: 1.6em;
+        font-size: 1.8em;
+    }
+
+    .panel-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+    }
+
+    .panel-mini-stats {
+        flex-wrap: wrap;
+        gap: 8px;
+        font-size: 0.78em;
+    }
+
+    .panel-chart-wrapper {
+        height: 190px;
     }
 
     .chart-section {
-        height: 300px;
+        height: 320px;
+    }
+}
+
+@media (max-width: 480px) {
+    header h1 {
+        font-size: 1.35em;
+    }
+
+    .panel-name {
+        font-size: 0.95em;
+    }
+
+    .panel-chart-wrapper {
+        height: 170px;
     }
 }
