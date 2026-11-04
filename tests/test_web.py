@@ -107,6 +107,104 @@ def test_index_page(client):
     assert b"last-updated" in response.data
 
 
+class TestAccessibilityAndUX:
+    """Focused regression tests for dashboard UX, accessibility landmarks, and controls."""
+
+    def test_skip_link_present(self, client):
+        """Skip to main content link should be present and point to #main-content."""
+        response = client.get("/")
+        assert response.status_code == 200
+        html = response.data.decode("utf-8")
+        assert '<a href="#main-content" class="skip-link">Skip to main content</a>' in html
+        assert 'id="main-content"' in html
+
+    def test_accessibility_landmarks(self, client):
+        """Semantic landmarks and aria roles should be present for screen readers."""
+        response = client.get("/")
+        assert response.status_code == 200
+        html = response.data.decode("utf-8")
+        assert 'role="banner"' in html
+        assert '<main id="main-content"' in html
+        assert 'role="region"' in html
+        assert 'role="status"' in html
+        assert 'aria-live="polite"' in html
+
+    def test_connection_and_freshness_controls(self, client):
+        """Live stream indicator, reconnect button, freshness badge, and refresh action should exist."""
+        response = client.get("/")
+        assert response.status_code == 200
+        html = response.data.decode("utf-8")
+        assert 'id="live-indicator"' in html
+        assert 'id="btn-reconnect"' in html
+        assert 'id="freshness-badge"' in html
+        assert 'id="freshness-text"' in html
+        assert 'id="btn-refresh-now"' in html
+
+    def test_display_mode_switcher(self, client):
+        """Segmented control allowing user to switch between charts and accessible table."""
+        response = client.get("/")
+        assert response.status_code == 200
+        html = response.data.decode("utf-8")
+        assert 'id="btn-view-charts"' in html
+        assert 'id="btn-view-table"' in html
+        assert 'class="segmented-control"' in html
+
+    def test_empty_and_loading_states(self, client):
+        """Global empty state, station empty state with recovery actions, and loading chip."""
+        response = client.get("/")
+        assert response.status_code == 200
+        html = response.data.decode("utf-8")
+        assert 'id="empty-state"' in html
+        assert 'id="station-empty-state"' in html
+        assert 'id="meta-loading"' in html
+        assert 'onclick="setRangeAndRefresh(\'all\')"' in html
+        assert 'onclick="setRangeAndRefresh(\'30d\')"' in html
+
+    def test_accessible_table_alternative(self, client):
+        """Accessible data table alternative should have scrollable region, caption, and headers."""
+        response = client.get("/")
+        assert response.status_code == 200
+        html = response.data.decode("utf-8")
+        assert 'id="table-container"' in html
+        assert 'id="telemetry-data-table"' in html
+        assert 'id="table-accessible-caption"' in html
+        assert 'id="btn-copy-csv"' in html
+        assert 'tabindex="0"' in html
+        assert 'role="region"' in html
+
+    def test_labeled_controls(self, client):
+        """All dropdowns and switches should have associated labels."""
+        response = client.get("/")
+        assert response.status_code == 200
+        html = response.data.decode("utf-8")
+        assert 'for="station-select"' in html
+        assert 'for="metric-select"' in html
+        assert 'for="range-select"' in html
+        assert 'for="limit-select"' in html
+        assert 'for="rollingWindow"' in html
+        assert 'id="toggleRaw"' in html
+        assert 'id="toggleRolling"' in html
+
+    def test_reconnect_button_wcag_contrast(self, client):
+        """Reconnect button background must provide >= 4.5:1 WCAG AA contrast against white text."""
+        response = client.get("/static/styles.css")
+        assert response.status_code == 200
+        css = response.data.decode("utf-8")
+        assert ".btn-reconnect {" in css
+        assert "background: #92400e;" in css
+
+    def test_app_js_sol_fixes(self, client):
+        """app.js must include UTC table formatter, live stats arguments, and derived freshness."""
+        response = client.get("/static/app.js")
+        assert response.status_code == 200
+        js = response.data.decode("utf-8")
+        assert "formatUtcTimestamp" in js
+        assert "scheduleCoalescedStatsRefresh" in js
+        assert "latestTelemetryTime" in js
+        assert "fetchStats(q, null, fetchId, station, metric, range)" in js
+
+
+
 # ============================================================================
 # 2. Stations API Tests
 # ============================================================================
