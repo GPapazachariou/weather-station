@@ -298,6 +298,101 @@ def calculate_jitter(backoff_jitter: float) -> float:
     return random.uniform(0, backoff_jitter)
 
 
+def is_backpressure_response(response: dict) -> bool:
+    """
+    Check if a server response indicates backpressure / server busy.
+    Matches either:
+    - {"status": "error", "code": "backpressure", ...}
+    - {"status": "error", "reason": "server_busy", ...}
+    """
+    if not isinstance(response, dict):
+        return False
+    return (
+        response.get("code") == "backpressure"
+        or response.get("reason") == "server_busy"
+    )
+
+
+async def wait_backoff_period(
+    wait_time: float,
+    batch_interval: float,
+    batch_size_min: int,
+    batch_size_max: int,
+    station_id: str,
+    buffer: deque,
+    max_buffer_records: int,
+    shutdown_check,
+):
+    """Wait for wait_time seconds while periodically generating and buffering batches."""
+    waited = 0.0
+    while waited < wait_time and not shutdown_check():
+        sleep_interval = min(batch_interval, wait_time - waited)
+        await asyncio.sleep(sleep_interval)
+        waited += sleep_interval
+
+        # Generate and buffer a batch
+        if waited >= batch_interval:
+            batch_size = random.randint(batch_size_min, batch_size_max)
+            batch = generate_batch(station_id, batch_size)
+
+            dropped = buffer_batch(buffer, batch, max_buffer_records)
+            if dropped is not None:
+                print(f"[{station_id}] ⚠ Buffer full! Dropped oldest, buffered new (buffer: {len(buffer)} batches)")
+            else:
+                print(f"[{station_id}] → Generated & buffered batch (buffer: {len(buffer)} batches)")
+
+
+async def flush_buffer(
+    reader,
+    writer,
+    buffer: deque,
+    station_id: str,
+    drain_timeout: float,
+    response_timeout: float,
+    shutdown_check,
+) -> tuple[str, dict | None]:
+    """
+    Flush buffered batches to server.
+    Returns:
+        tuple[str, dict | None]: ("ok", None) on success, or ("backpressure", response).
+    """
+    while buffer and not shutdown_check():
+        buffered_batch = buffer.popleft()
+        json_line = json.dumps(buffered_batch) + "\n"
+
+        try:
+            writer.write(json_line.encode('utf-8'))
+            await asyncio.wait_for(writer.drain(), timeout=drain_timeout)
+
+            # Read response
+            response_line = await asyncio.wait_for(
+                reader.readline(),
+                timeout=response_timeout
+            )
+
+            if not response_line:
+                buffer.appendleft(buffered_batch)
+                raise ConnectionError("Server closed connection")
+
+            response = json.loads(response_line.decode('utf-8'))
+
+            if response.get("status") == "ok":
+                print(f"[{station_id}] ✓ Flushed batch ({response['inserted']} readings)")
+            elif is_backpressure_response(response):
+                # Put batch back at head of buffer
+                buffer.appendleft(buffered_batch)
+                print(f"[{station_id}] ⚠ Server backpressure during flush: {response.get('reason', 'server_busy')}")
+                return "backpressure", response
+            else:
+                print(f"[{station_id}] ✗ Server rejected buffered batch: {response.get('reason', 'unknown')}")
+        except (OSError, ConnectionError, asyncio.TimeoutError, BrokenPipeError) as e:
+            buffer.appendleft(buffered_batch)
+            print(f"[{station_id}] ✗ Connection lost during flush: {e}")
+            raise
+
+    return "ok", None
+
+
 async def send_batches(config):
     """
     Resilient client with infinite reconnection loop, exponential backoff,
@@ -360,43 +455,29 @@ async def send_batches(config):
             # Reset backoff on successful connection
             current_backoff = base_backoff
             
-            # Flush buffered batches first
-            if buffer:
-                print(f"[{station_id}] Flushing {len(buffer)} buffered batches...")
-                while buffer and not shutdown:
-                    try:
-                        buffered_batch = buffer.popleft()
-                        json_line = json.dumps(buffered_batch) + "\n"
-                        
-                        writer.write(json_line.encode('utf-8'))
-                        await asyncio.wait_for(writer.drain(), timeout=drain_timeout)
-                        
-                        # Read response
-                        response_line = await asyncio.wait_for(
-                            reader.readline(),
-                            timeout=response_timeout
-                        )
-                        
-                        if not response_line:
-                            raise ConnectionError("Server closed connection")
-                        
-                        response = json.loads(response_line.decode('utf-8'))
-                        
-                        if response["status"] == "ok":
-                            print(f"[{station_id}] ✓ Flushed batch ({response['inserted']} readings)")
-                        else:
-                            print(f"[{station_id}] ✗ Server rejected buffered batch: {response.get('reason', 'unknown')}")
-                    
-                    except (OSError, ConnectionError, asyncio.TimeoutError, BrokenPipeError) as e:
-                        print(f"[{station_id}] ✗ Connection lost during flush: {e}")
-                        # Put batch back in buffer
-                        buffer.appendleft(buffered_batch)
-                        raise
-                
-                print(f"[{station_id}] ✓ Buffer flushed successfully")
-            
             # Inner loop - connected state, send batches normally
             while not shutdown:
+                # If buffer has accumulated items, flush them before generating a new batch
+                if buffer:
+                    print(f"[{station_id}] Flushing {len(buffer)} buffered batches...")
+                    flush_status, resp = await flush_buffer(
+                        reader, writer, buffer, station_id, drain_timeout, response_timeout, lambda: shutdown
+                    )
+                    if flush_status == "backpressure":
+                        retry_after = resp.get("retry_after", 1) if resp else 1
+                        jitter = calculate_jitter(backoff_jitter)
+                        wait_time = max(float(retry_after), current_backoff) + jitter
+                        print(f"[{station_id}] → Backing off for {wait_time:.1f}s (backoff: {current_backoff:.1f}s + jitter: {jitter:.1f}s)")
+                        await wait_backoff_period(
+                            wait_time, batch_interval, batch_size_min, batch_size_max,
+                            station_id, buffer, max_buffer_records, lambda: shutdown
+                        )
+                        current_backoff = calculate_backoff(current_backoff, max_backoff)
+                        continue
+                    else:
+                        current_backoff = base_backoff
+                        print(f"[{station_id}] ✓ Buffer flushed successfully")
+
                 # Generate a batch
                 batch_size = random.randint(batch_size_min, batch_size_max)
                 batch = generate_batch(station_id, batch_size)
@@ -420,16 +501,33 @@ async def send_batches(config):
                     
                     response = json.loads(response_line.decode('utf-8'))
                     
-                    # Print response
-                    if response["status"] == "ok":
+                    # Process response
+                    if response.get("status") == "ok":
                         print(f"[{station_id}] Batch #{batch_num}: ✓ Sent {batch_size} readings, server inserted {response['inserted']}")
+                        current_backoff = base_backoff
+                        batch_num += 1
+                        await asyncio.sleep(batch_interval)
+                    elif is_backpressure_response(response):
+                        print(f"[{station_id}] Batch #{batch_num}: ⚠ Server backpressure ({response.get('reason', 'server_busy')})")
+                        dropped = buffer_batch(buffer, batch, max_buffer_records)
+                        if dropped is not None:
+                            print(f"[{station_id}] ⚠ Buffer full! Dropped oldest batch ({len(dropped)} readings), buffer size: {len(buffer)}")
+                        else:
+                            print(f"[{station_id}] → Buffered batch (buffer size: {len(buffer)})")
+
+                        retry_after = response.get("retry_after", 1)
+                        jitter = calculate_jitter(backoff_jitter)
+                        wait_time = max(float(retry_after), current_backoff) + jitter
+                        print(f"[{station_id}] → Backing off for {wait_time:.1f}s (backoff: {current_backoff:.1f}s + jitter: {jitter:.1f}s)")
+                        await wait_backoff_period(
+                            wait_time, batch_interval, batch_size_min, batch_size_max,
+                            station_id, buffer, max_buffer_records, lambda: shutdown
+                        )
+                        current_backoff = calculate_backoff(current_backoff, max_backoff)
                     else:
                         print(f"[{station_id}] Batch #{batch_num}: ✗ Server error: {response.get('reason', 'unknown')}")
-                    
-                    batch_num += 1
-                    
-                    # Wait before next batch
-                    await asyncio.sleep(batch_interval)
+                        batch_num += 1
+                        await asyncio.sleep(batch_interval)
                 
                 except (OSError, ConnectionError, asyncio.TimeoutError, BrokenPipeError) as e:
                     print(f"[{station_id}] ✗ Connection error during send: {type(e).__name__}: {e}")
@@ -458,23 +556,10 @@ async def send_batches(config):
                 # While disconnected, keep generating data and buffering
                 print(f"[{station_id}] → Buffering mode active (buffer: {len(buffer)} batches)")
                 
-                # Wait with periodic batch generation
-                waited = 0.0
-                while waited < wait_time and not shutdown:
-                    sleep_interval = min(batch_interval, wait_time - waited)
-                    await asyncio.sleep(sleep_interval)
-                    waited += sleep_interval
-                    
-                    # Generate and buffer a batch
-                    if waited >= batch_interval:
-                        batch_size = random.randint(batch_size_min, batch_size_max)
-                        batch = generate_batch(station_id, batch_size)
-                        
-                        dropped = buffer_batch(buffer, batch, max_buffer_records)
-                        if dropped is not None:
-                            print(f"[{station_id}] ⚠ Buffer full! Dropped oldest, buffered new (buffer: {len(buffer)} batches)")
-                        else:
-                            print(f"[{station_id}] → Generated & buffered batch (buffer: {len(buffer)} batches)")
+                await wait_backoff_period(
+                    wait_time, batch_interval, batch_size_min, batch_size_max,
+                    station_id, buffer, max_buffer_records, lambda: shutdown
+                )
                 
                 # Exponential backoff - double the backoff time
                 current_backoff = calculate_backoff(current_backoff, max_backoff)

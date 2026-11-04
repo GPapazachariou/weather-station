@@ -386,6 +386,9 @@ curl "http://localhost:8000/api/stats?station_id=STATION-001&metric=temperature&
 | `DB_PATH` | `/app/data/weather.db` | Path to SQLite database file. Inside Docker, points to the mounted volume. |
 | `SERVER_HOST` | `0.0.0.0` | Bind address for the asyncio TCP server (configurable via environment variable). |
 | `SERVER_PORT` | `12345` | TCP port for incoming station and consumer connections (configurable via environment variable). |
+| `WRITE_QUEUE_MAX` | `500` | Maximum write queue depth before applying backpressure. |
+| `WRITE_ENQUEUE_TIMEOUT` | `2.0` | Timeout in seconds waiting for queue space before returning `server_busy` backpressure. |
+| `WRITE_ACK_TIMEOUT` | `5.0` | Timeout in seconds waiting for writer task acknowledgment before timing out. |
 
 **Weather Station Client** ([`station_client/client.py`](station_client/client.py)):
 

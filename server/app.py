@@ -19,6 +19,11 @@ DB_FILE = os.getenv("DB_PATH", "/app/data/weather.db")
 HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 PORT = int(os.getenv("SERVER_PORT", "12345"))
 
+# Queue and backpressure configuration
+QUEUE_MAXSIZE = int(os.getenv("WRITE_QUEUE_MAX", "500"))
+WRITE_ENQUEUE_TIMEOUT = float(os.getenv("WRITE_ENQUEUE_TIMEOUT", "2.0"))
+WRITE_ACK_TIMEOUT = float(os.getenv("WRITE_ACK_TIMEOUT", "5.0"))
+
 # Global state
 write_queue = None
 shutdown_event = None
@@ -28,6 +33,11 @@ db_connection = None
 
 # Sentinel to signal writer task to exit
 _WRITER_SENTINEL = (None, None)
+
+
+class BackpressureError(Exception):
+    """Raised when write queue is full and enqueue times out."""
+    pass
 
 
 def _safe_json_loads(data: str):
@@ -191,6 +201,7 @@ async def enqueue_batch(batch):
     """
     Enqueue a validated batch for writing.
     Creates a future using the current event loop to handle cancellation properly.
+    Enforces backpressure queue put timeout and writer ACK timeout.
     Returns the number of inserted readings.
     """
     if not batch:
@@ -200,12 +211,22 @@ async def enqueue_batch(batch):
     loop = asyncio.get_running_loop()
     result_future = loop.create_future()
     
-    # Add batch to queue
-    await write_queue.put((batch, result_future))
-    
-    # Wait for writer task to process it
+    # Add batch to queue with backpressure timeout
     try:
-        return await result_future
+        await asyncio.wait_for(
+            write_queue.put((batch, result_future)),
+            timeout=WRITE_ENQUEUE_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        result_future.cancel()
+        raise BackpressureError("server_busy") from None
+    
+    # Wait for writer task to process it with bounded ACK timeout
+    try:
+        return await asyncio.wait_for(result_future, timeout=WRITE_ACK_TIMEOUT)
+    except asyncio.TimeoutError:
+        result_future.cancel()
+        raise TimeoutError("write_ack_timeout") from None
     except asyncio.CancelledError:
         # Client disconnected while waiting
         result_future.cancel()
@@ -365,7 +386,26 @@ async def handle_client(reader, writer):
             except asyncio.CancelledError:
                 # Client handler was cancelled (connection lost, etc.)
                 raise
-                
+
+            except BackpressureError:
+                # Write queue full - return structured backpressure response
+                response = {
+                    "status": "error",
+                    "code": "backpressure",
+                    "reason": "server_busy",
+                    "retry_after": 1,
+                }
+                writer.write((json.dumps(response) + "\n").encode('utf-8'))
+                await writer.drain()
+                print(f"Backpressure applied to {addr}: server_busy")
+
+            except TimeoutError as e:
+                # Writer ACK timeout
+                response = {"status": "error", "reason": f"server_error: {str(e)}"}
+                writer.write((json.dumps(response) + "\n").encode('utf-8'))
+                await writer.drain()
+                print(f"Writer ACK timeout for {addr}: {e}")
+
             except json.JSONDecodeError as e:
                 # Invalid JSON - do not insert anything
                 response = {"status": "error", "reason": f"invalid_json: {str(e)}"}
@@ -413,8 +453,8 @@ async def main():
     # Initialize database
     await init_database()
     
-    # Create queue and shutdown event
-    write_queue = asyncio.Queue()
+    # Create bounded write queue and shutdown event
+    write_queue = asyncio.Queue(maxsize=QUEUE_MAXSIZE)
     shutdown_event = asyncio.Event()
     
     # Start database writer task
