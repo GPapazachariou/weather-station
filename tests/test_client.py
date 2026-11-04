@@ -181,12 +181,14 @@ class TestClientConfig:
     """Tests for client.load_config() argument and environment variable handling."""
 
     def test_default_config_loading(self, monkeypatch):
-        """With no CLI args and no env vars, defaults should be loaded."""
+        """With no CLI args, no env vars, and empty hostname, defaults should be loaded."""
         monkeypatch.setattr("sys.argv", ["client.py"])
-        # Clear any existing WEATHER_STATION_ env vars
+        # Clear any existing WEATHER_STATION_ env vars and HOSTNAME
         for k in list(client.os.environ.keys()):
             if k.startswith("WEATHER_STATION_"):
                 monkeypatch.delenv(k, raising=False)
+        monkeypatch.delenv("HOSTNAME", raising=False)
+        monkeypatch.setattr("client.socket.gethostname", lambda: "")
 
         cfg = client.load_config()
         assert cfg["server_host"] == client.DEFAULT_SERVER_HOST
@@ -195,9 +197,37 @@ class TestClientConfig:
         assert cfg["batch_size_min"] == client.DEFAULT_BATCH_SIZE_MIN
         assert cfg["batch_size_max"] == client.DEFAULT_BATCH_SIZE_MAX
 
-    def test_env_var_overrides_defaults(self, monkeypatch):
-        """Environment variables should override defaults when CLI args are absent."""
+    def test_hostname_env_fallback(self, monkeypatch):
+        """When WEATHER_STATION_ID is unset, station_id falls back to HOSTNAME env var."""
         monkeypatch.setattr("sys.argv", ["client.py"])
+        monkeypatch.delenv("WEATHER_STATION_ID", raising=False)
+        monkeypatch.setenv("HOSTNAME", "a1b2c3d4e5f6")
+
+        cfg = client.load_config()
+        assert cfg["station_id"] == "a1b2c3d4e5f6"
+        assert validate_batch([client.generate_reading(cfg["station_id"])]) is None
+
+    def test_socket_gethostname_fallback_and_sanitization(self, monkeypatch):
+        """When WEATHER_STATION_ID and HOSTNAME are unset, falls back to sanitized socket.gethostname()."""
+        monkeypatch.setattr("sys.argv", ["client.py"])
+        monkeypatch.delenv("WEATHER_STATION_ID", raising=False)
+        monkeypatch.delenv("HOSTNAME", raising=False)
+        monkeypatch.setattr("client.socket.gethostname", lambda: "my.station.host.local")
+
+        cfg = client.load_config()
+        assert cfg["station_id"] == "my-station-host-local"
+        assert validate_batch([client.generate_reading(cfg["station_id"])]) is None
+
+    def test_resolve_station_id_invalid_hostname_falls_back_to_default(self, monkeypatch):
+        """If hostname contains only invalid characters or is empty, falls back to DEFAULT_STATION_ID."""
+        monkeypatch.delenv("HOSTNAME", raising=False)
+        monkeypatch.setattr("client.socket.gethostname", lambda: "...")
+        assert client.resolve_station_id() == client.DEFAULT_STATION_ID
+
+    def test_env_var_overrides_defaults(self, monkeypatch):
+        """Environment variables should override defaults and HOSTNAME when CLI args are absent."""
+        monkeypatch.setattr("sys.argv", ["client.py"])
+        monkeypatch.setenv("HOSTNAME", "container-short-id")
         monkeypatch.setenv("WEATHER_STATION_HOST", "weather.remote.server")
         monkeypatch.setenv("WEATHER_STATION_PORT", "9999")
         monkeypatch.setenv("WEATHER_STATION_ID", "STN-ENV-01")
@@ -210,6 +240,8 @@ class TestClientConfig:
     def test_cli_args_override_env_vars(self, monkeypatch):
         """CLI arguments should have highest precedence over env vars and defaults."""
         monkeypatch.setenv("WEATHER_STATION_HOST", "env.host")
+        monkeypatch.setenv("WEATHER_STATION_ID", "STN-ENV-01")
+        monkeypatch.setenv("HOSTNAME", "container-short-id")
         monkeypatch.setattr(
             "sys.argv",
             [

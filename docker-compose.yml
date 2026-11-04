@@ -1,4 +1,4 @@
-version: '3.8'
+name: weather-demo
 
 services:
   # TCP Server - receives weather data and stores in SQLite
@@ -17,6 +17,7 @@ services:
       - SERVER_PORT=12345
       - DB_PATH=/app/data/weather.db
       - PYTHONUNBUFFERED=1
+    stop_grace_period: 20s
     restart: unless-stopped
     networks:
       - weather-network
@@ -41,7 +42,6 @@ services:
       - WEATHER_STATION_BATCH_MAX=1
       - WEATHER_STATION_BATCH_INTERVAL=5
       - WEATHER_STATION_TIMEOUT=5.0
-      - WEATHER_STATION_MAX_RETRIES=3
       - PYTHONUNBUFFERED=1
     depends_on:
       server:
@@ -64,7 +64,6 @@ services:
       - WEATHER_STATION_BATCH_MAX=1
       - WEATHER_STATION_BATCH_INTERVAL=5
       - WEATHER_STATION_TIMEOUT=5.0
-      - WEATHER_STATION_MAX_RETRIES=3
       - PYTHONUNBUFFERED=1
     depends_on:
       server:
@@ -87,7 +86,6 @@ services:
       - WEATHER_STATION_BATCH_MAX=1
       - WEATHER_STATION_BATCH_INTERVAL=5
       - WEATHER_STATION_TIMEOUT=5.0
-      - WEATHER_STATION_MAX_RETRIES=3
       - PYTHONUNBUFFERED=1
     depends_on:
       server:

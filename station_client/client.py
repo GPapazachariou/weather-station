@@ -10,7 +10,9 @@ import hashlib
 import json
 import os
 import random
+import re
 import signal
+import socket
 from collections import deque
 from datetime import datetime, timezone
 
@@ -30,6 +32,33 @@ DEFAULT_MAX_BACKOFF = 60.0      # Max 60 seconds between retries
 DEFAULT_BACKOFF_JITTER = 1.0    # Add 0-1 second random jitter
 DEFAULT_MAX_BUFFER_RECORDS = 1000  # Max buffered readings
 DEFAULT_DRAIN_TIMEOUT = 5.0     # Timeout for writer.drain()
+
+
+def resolve_station_id(cli_station_id=None, env_station_id=None) -> str:
+    """
+    Resolve station_id with precedence:
+    CLI --station-id > WEATHER_STATION_ID > HOSTNAME env > socket.gethostname() > DEFAULT_STATION_ID.
+
+    Automatic hostname fallbacks are sanitized to match server protocol rules
+    ([A-Za-z0-9_-], max length 64).
+    """
+    if cli_station_id and cli_station_id.strip():
+        return cli_station_id.strip()
+    if env_station_id and env_station_id.strip():
+        return env_station_id.strip()
+
+    raw_hostname = os.getenv("HOSTNAME") or ""
+    if not raw_hostname.strip():
+        try:
+            raw_hostname = socket.gethostname()
+        except Exception:
+            raw_hostname = ""
+
+    sanitized = re.sub(r"[^A-Za-z0-9_-]", "-", raw_hostname.strip()).strip("-")[:64].strip("-")
+    if sanitized:
+        return sanitized
+
+    return DEFAULT_STATION_ID
 
 
 def load_config():
@@ -55,7 +84,7 @@ def load_config():
 Environment variables (override defaults):
   WEATHER_STATION_HOST           Server host (default: localhost)
   WEATHER_STATION_PORT           Server port (default: 12345)
-  WEATHER_STATION_ID             Station ID (default: STATION-001)
+  WEATHER_STATION_ID             Station ID (default: container HOSTNAME / system hostname)
   WEATHER_STATION_BATCH_MIN      Min batch size (default: 1)
   WEATHER_STATION_BATCH_MAX      Max batch size (default: 1)
   WEATHER_STATION_BATCH_INTERVAL Batch interval in seconds (default: 5)
@@ -84,8 +113,8 @@ CLI arguments override environment variables.
     parser.add_argument(
         "--station-id",
         type=str,
-        default=env_station_id or DEFAULT_STATION_ID,
-        help="Station ID"
+        default=None,
+        help="Station ID (defaults to WEATHER_STATION_ID or container/system hostname)"
     )
     
     # Batching arguments
@@ -123,6 +152,7 @@ CLI arguments override environment variables.
     )
     
     args = parser.parse_args()
+    station_id = resolve_station_id(args.station_id, env_station_id)
     
     # Validate configuration values
     if args.batch_min <= 0 or args.batch_max <= 0:
@@ -141,7 +171,7 @@ CLI arguments override environment variables.
     return {
         "server_host": args.host,
         "server_port": args.port,
-        "station_id": args.station_id,
+        "station_id": station_id,
         "batch_size_min": args.batch_min,
         "batch_size_max": args.batch_max,
         "batch_interval": args.batch_interval,
