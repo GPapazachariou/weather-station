@@ -70,7 +70,7 @@
                 <span class="notice-icon" aria-hidden="true">⚠️</span>
                 <span id="error-message-text" class="notice-text">Unable to load weather station data. Please check connection.</span>
             </div>
-            <button type="button" id="btn-retry" class="btn-retry" onclick="refreshAll()">Retry</button>
+            <button type="button" id="btn-retry" class="btn-retry" onclick="refreshAllWithStations()">Retry</button>
         </div>
 
         <!-- Controls Toolbar -->
@@ -173,7 +173,7 @@
             <h2 class="empty-state-title">No Weather Data Available</h2>
             <p class="empty-state-text">No stations or telemetry readings were found in the database.</p>
             <p class="empty-state-hint">Start a station client or seed demo readings to begin live monitoring.</p>
-            <button type="button" class="btn-refresh-empty" onclick="refreshAll()">Check Again</button>
+            <button type="button" class="btn-refresh-empty" onclick="refreshAllWithStations()">Check Again</button>
         </div>
 
         <!-- Single Metric Stats Cards -->

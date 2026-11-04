@@ -517,12 +517,26 @@ async function refreshAll() {
 }
 
 /**
+ * Full refresh: reload stations and re-fetch dashboard data (used by Check Again and Retry)
+ */
+async function refreshAllWithStations() {
+    hideErrorBanner();
+    await loadStations();
+    closeLiveStream();
+    await refreshAll();
+    initLiveStream();
+}
+
+/**
  * Fetch and display stats from full dataset
  */
 async function fetchStats(queryParams) {
     try {
         const url = `/api/stats${queryParams}`;
         const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
         const data = await response.json();
         const metric = new URLSearchParams(queryParams).get('metric');
 
@@ -533,6 +547,7 @@ async function fetchStats(queryParams) {
         }
     } catch (error) {
         console.error('[Error] Failed to fetch stats:', error);
+        showErrorBanner('Failed to fetch statistics. Please check server or database.');
     }
 }
 
@@ -599,16 +614,14 @@ function updateSingleMetricStats(data, metric) {
     document.getElementById('stat-min').textContent = data.min !== null && data.min !== undefined ? `${data.min.toFixed(2)} ${config.unit}` : '--';
     document.getElementById('stat-max').textContent = data.max !== null && data.max !== undefined ? `${data.max.toFixed(2)} ${config.unit}` : '--';
 
-    if (metric === 'temperature') {
-        const heroTemp = document.getElementById('hero-quick-temp');
-        if (heroTemp) heroTemp.textContent = valFormatted;
-    } else if (metric === 'humidity') {
-        const heroHum = document.getElementById('hero-quick-hum');
-        if (heroHum) heroHum.textContent = valFormatted;
-    } else if (metric === 'windspeed' || metric === 'wind_speed') {
-        const heroWind = document.getElementById('hero-quick-wind');
-        if (heroWind) heroWind.textContent = valFormatted;
-    }
+    // Update the selected metric in hero bar and clear unselected metrics to prevent stale station leakage
+    const heroTemp = document.getElementById('hero-quick-temp');
+    const heroHum = document.getElementById('hero-quick-hum');
+    const heroWind = document.getElementById('hero-quick-wind');
+
+    if (heroTemp) heroTemp.textContent = (metric === 'temperature') ? valFormatted : '--';
+    if (heroHum) heroHum.textContent = (metric === 'humidity') ? valFormatted : '--';
+    if (heroWind) heroWind.textContent = (metric === 'windspeed' || metric === 'wind_speed') ? valFormatted : '--';
 }
 
 /**
@@ -623,6 +636,9 @@ async function fetchReadings(queryParams) {
         // Supply full raw sequence without server-side downsampling (S3)
         const url = `/api/readings${queryParams}`;
         const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
         const data = await response.json();
 
         const rawEnabled = document.getElementById('toggleRaw').checked;
@@ -659,6 +675,7 @@ async function fetchReadings(queryParams) {
         }
     } catch (error) {
         console.error('[Error] Failed to fetch readings:', error);
+        showErrorBanner('Failed to fetch telemetry readings. Please check server or database.');
     }
 }
 
