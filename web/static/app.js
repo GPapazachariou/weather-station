@@ -393,24 +393,27 @@ function scheduleReconnect() {
 }
 
 /**
- * Schedule a debounced/coalesced fetch of full-dataset statistics on live updates (S5)
+ * Schedule a debounced/coalesced fetch of full-dataset statistics on live updates (S1, S5)
  */
 function scheduleCoalescedStatsRefresh() {
     if (statsRefreshTimer) return;
     statsRefreshTimer = setTimeout(async () => {
         statsRefreshTimer = null;
         try {
-            const station = document.getElementById('station-select').value;
-            const metric = document.getElementById('metric-select').value;
-            const range = document.getElementById('range-select').value;
+            const station = document.getElementById('station-select')?.value;
+            const metric = document.getElementById('metric-select')?.value;
+            const range = document.getElementById('range-select')?.value;
+            if (!station || !metric || !range) return;
+
             let q = `?station_id=${encodeURIComponent(station)}&metric=${encodeURIComponent(metric)}`;
             if (range === 'limit') {
-                const limit = document.getElementById('limit-select').value || 50;
+                const limit = document.getElementById('limit-select')?.value || 50;
                 q += `&limit=${encodeURIComponent(limit)}`;
             } else {
                 q += `&range=${encodeURIComponent(range)}`;
             }
-            await fetchStats(q);
+            const fetchId = currentFetchId;
+            await fetchStats(q, null, fetchId, station, metric, range);
         } catch (e) {
             console.warn('[StatsRefresh] Coalesced refresh error:', e);
         }
@@ -421,20 +424,34 @@ function scheduleCoalescedStatsRefresh() {
  * Handle new live reading received from SSE stream (S2, S3, S5)
  */
 function handleLiveReading(reading) {
-    const station = document.getElementById('station-select').value;
+    const station = document.getElementById('station-select')?.value;
     if (!reading || reading.station_id !== station) {
         return;
     }
 
-    lastUpdatedTime = new Date();
+    if (reading.timestamp) {
+        const d = new Date(reading.timestamp);
+        if (!isNaN(d.getTime())) {
+            lastUpdatedTime = d;
+        } else {
+            lastUpdatedTime = new Date();
+        }
+    } else {
+        lastUpdatedTime = new Date();
+    }
     updateLastUpdatedDisplay();
 
-    const metricMode = document.getElementById('metric-select').value;
-    const rangeSelect = document.getElementById('range-select').value;
-    const limit = rangeSelect === 'limit' ? (parseInt(document.getElementById('limit-select').value, 10) || 50) : null;
-    const windowSize = parseInt(document.getElementById('rollingWindow').value, 10) || 10;
-    const rawEnabled = document.getElementById('toggleRaw').checked;
-    const rollingEnabled = document.getElementById('toggleRolling').checked;
+    // Restoring content visibility when recovering from an empty window (S2)
+    hideStationEmptyState();
+
+    const metricMode = document.getElementById('metric-select')?.value;
+    updateContainerVisibility(metricMode, currentDisplayFormat);
+
+    const rangeSelect = document.getElementById('range-select')?.value;
+    const limit = rangeSelect === 'limit' ? (parseInt(document.getElementById('limit-select')?.value, 10) || 50) : null;
+    const windowSize = parseInt(document.getElementById('rollingWindow')?.value, 10) || 10;
+    const rawEnabled = document.getElementById('toggleRaw')?.checked;
+    const rollingEnabled = document.getElementById('toggleRolling')?.checked;
 
     if (metricMode === 'all') {
         const metrics = ['temperature', 'humidity', 'windspeed'];
@@ -470,9 +487,13 @@ function handleLiveReading(reading) {
             }
         }
 
-        // Recompute global bounds and update panels with gap/tooltip integrity (S1, S2, S3)
-        refreshAllPanelsData(multiSeries, rawEnabled, rollingEnabled, windowSize, rangeSelect);
-        scheduleCoalescedStatsRefresh(); // S5
+        // Recompute global bounds and update panels or table (S2)
+        if (currentDisplayFormat === 'table') {
+            renderAccessibleTable();
+        } else {
+            refreshAllPanelsData(multiSeries, rawEnabled, rollingEnabled, windowSize, rangeSelect);
+        }
+        scheduleCoalescedStatsRefresh(); // S1, S5
     } else {
         // Single metric mode
         let val = reading[metricMode];
@@ -483,15 +504,19 @@ function handleLiveReading(reading) {
 
         const numVal = typeof val === 'number' ? val : parseFloat(val);
         document.getElementById('stat-latest').textContent = numVal.toFixed(2);
-        document.getElementById('stat-latest-time').textContent = formatFullTimestamp(reading.timestamp);
+        document.getElementById('stat-latest-time').textContent = formatUtcTimestamp(reading.timestamp);
 
         currentRawPoints.push({ t: reading.timestamp, v: numVal });
         if (limit && currentRawPoints.length > limit) {
             while (currentRawPoints.length > limit) currentRawPoints.shift();
         }
 
-        renderSingleChart(metricMode, currentRawPoints, rawEnabled, rollingEnabled, windowSize, rangeSelect);
-        scheduleCoalescedStatsRefresh(); // S5
+        if (currentDisplayFormat === 'table') {
+            renderAccessibleTable();
+        } else {
+            renderSingleChart(metricMode, currentRawPoints, rawEnabled, rollingEnabled, windowSize, rangeSelect);
+        }
+        scheduleCoalescedStatsRefresh(); // S1, S5
     }
 }
 
@@ -699,7 +724,7 @@ async function refreshAll() {
         updateContainerVisibility(metric, currentDisplayFormat);
 
         // Fetch stats and readings in parallel with abortSignal and fetchId
-        await Promise.all([
+        const [, readingsResult] = await Promise.all([
             fetchStats(queryParams, abortSignal, fetchId, station, metric, range),
             fetchReadings(queryParams, abortSignal, fetchId, station, metric, range)
         ]);
@@ -709,14 +734,18 @@ async function refreshAll() {
             return;
         }
 
-        lastUpdatedTime = new Date();
-        updateLastUpdatedDisplay();
+        // Derive freshness from latest telemetry timestamp (S3)
+        if (readingsResult && readingsResult.success) {
+            lastUpdatedTime = readingsResult.latestTelemetryTime || null;
+            updateLastUpdatedDisplay();
+        }
     } catch (err) {
         if (err.name === 'AbortError') {
             console.log(`[Refresh #${fetchId}] Aborted by newer request`);
             return;
         }
         console.error(`[Refresh #${fetchId}] Error:`, err);
+        // On error, preserve existing freshness state rather than marking Fresh (S3)
     } finally {
         if (fetchId === currentFetchId) {
             isRefreshing = false;
@@ -757,14 +786,14 @@ async function fetchStats(queryParams, signal, fetchId, station, metric, range) 
         // Verify that this response is still for the current active request
         if (fetchId && fetchId !== currentFetchId) {
             console.log(`[fetchStats #${fetchId}] Dropping stale response (current is #${currentFetchId})`);
-            return;
+            return null;
         }
         const activeStation = document.getElementById('station-select')?.value;
         const activeMetric = document.getElementById('metric-select')?.value;
         const activeRange = document.getElementById('range-select')?.value;
         if (station !== activeStation || metric !== activeMetric || range !== activeRange) {
             console.log(`[fetchStats #${fetchId}] Selection changed while in-flight, dropping delayed response`);
-            return;
+            return null;
         }
 
         if (metric === 'all') {
@@ -772,10 +801,12 @@ async function fetchStats(queryParams, signal, fetchId, station, metric, range) 
         } else {
             updateSingleMetricStats(data, metric);
         }
+        return { success: true };
     } catch (error) {
-        if (error.name === 'AbortError') return;
+        if (error.name === 'AbortError') return null;
         console.error('[Error] Failed to fetch stats:', error);
         showErrorBanner('Failed to fetch statistics. Please check server or database.');
+        throw error;
     }
 }
 
@@ -909,19 +940,21 @@ async function fetchReadings(queryParams, signal, fetchId, station, metric, rang
         // Verify that this response is still for the current active request
         if (fetchId && fetchId !== currentFetchId) {
             console.log(`[fetchReadings #${fetchId}] Dropping stale response (current is #${currentFetchId})`);
-            return;
+            return null;
         }
         const activeStation = document.getElementById('station-select')?.value;
         const activeMetric = document.getElementById('metric-select')?.value;
         const activeRange = document.getElementById('range-select')?.value;
         if (station !== activeStation || metric !== activeMetric || range !== activeRange) {
             console.log(`[fetchReadings #${fetchId}] Selection changed while in-flight, dropping delayed response`);
-            return;
+            return null;
         }
 
-        const rawEnabled = document.getElementById('toggleRaw').checked;
-        const rollingEnabled = document.getElementById('toggleRolling').checked;
-        const windowSize = parseInt(document.getElementById('rollingWindow').value, 10) || 10;
+        const rawEnabled = document.getElementById('toggleRaw')?.checked;
+        const rollingEnabled = document.getElementById('toggleRolling')?.checked;
+        const windowSize = parseInt(document.getElementById('rollingWindow')?.value, 10) || 10;
+
+        let latestTelemetryTime = null;
 
         if (metric === 'all') {
             const series = data.series || {};
@@ -932,6 +965,23 @@ async function fetchReadings(queryParams, signal, fetchId, station, metric, rang
             multiSeries.windspeed = series.windspeed || [];
 
             updateMetaChips(totalPoints, totalPoints > 350);
+
+            // Derive latest telemetry timestamp across all multi-panel series (S3)
+            const allPoints = [
+                ...(multiSeries.temperature || []),
+                ...(multiSeries.humidity || []),
+                ...(multiSeries.windspeed || [])
+            ];
+            for (const pt of allPoints) {
+                if (pt && pt.t) {
+                    const d = new Date(pt.t);
+                    if (!isNaN(d.getTime())) {
+                        if (!latestTelemetryTime || d > latestTelemetryTime) {
+                            latestTelemetryTime = d;
+                        }
+                    }
+                }
+            }
 
             const hasPoints = (multiSeries.temperature.length > 0 || multiSeries.humidity.length > 0 || multiSeries.windspeed.length > 0);
             if (!hasPoints) {
@@ -954,6 +1004,18 @@ async function fetchReadings(queryParams, signal, fetchId, station, metric, rang
 
             updateMetaChips(totalPoints, totalPoints > 350);
 
+            // Derive latest telemetry timestamp for single metric (S3)
+            for (const pt of points) {
+                if (pt && pt.t) {
+                    const d = new Date(pt.t);
+                    if (!isNaN(d.getTime())) {
+                        if (!latestTelemetryTime || d > latestTelemetryTime) {
+                            latestTelemetryTime = d;
+                        }
+                    }
+                }
+            }
+
             if (points.length === 0) {
                 showStationEmptyState(station, range);
             } else {
@@ -968,10 +1030,12 @@ async function fetchReadings(queryParams, signal, fetchId, station, metric, rang
                 }
             }
         }
+        return { success: true, latestTelemetryTime };
     } catch (error) {
-        if (error.name === 'AbortError') return;
+        if (error.name === 'AbortError') return null;
         console.error('[Error] Failed to fetch readings:', error);
         showErrorBanner('Failed to fetch telemetry readings. Please check server or database.');
+        throw error;
     }
 }
 
@@ -1772,7 +1836,7 @@ function renderAccessibleTable() {
             const humStr = (row.hum !== undefined && row.hum !== null) ? row.hum.toFixed(2) : '--';
             const windStr = (row.wind !== undefined && row.wind !== null) ? row.wind.toFixed(2) : '--';
             return `<tr>
-                <th scope="row">${formatFullTimestamp(t)}</th>
+                <th scope="row">${formatUtcTimestamp(t)}</th>
                 <td>${tempStr}</td>
                 <td>${humStr}</td>
                 <td>${windStr}</td>
@@ -1797,7 +1861,7 @@ function renderAccessibleTable() {
         tbody.innerHTML = points.map(p => {
             const valStr = (p.v !== undefined && p.v !== null) ? p.v.toFixed(2) : 'N/A';
             return `<tr>
-                <th scope="row">${formatFullTimestamp(p.t)}</th>
+                <th scope="row">${formatUtcTimestamp(p.t)}</th>
                 <td>${valStr}</td>
             </tr>`;
         }).join('');
@@ -1937,4 +2001,24 @@ function formatFullTimestamp(isoString) {
  */
 function formatTime(isoString) {
     return formatFullTimestamp(isoString);
+}
+
+/**
+ * Explicit UTC timestamp formatter for table and data presentation (S4)
+ */
+function formatUtcTimestamp(isoString) {
+    try {
+        const date = new Date(isoString);
+        if (isNaN(date.getTime())) return String(isoString || '');
+        const pad = (n) => String(n).padStart(2, '0');
+        const year = date.getUTCFullYear();
+        const month = pad(date.getUTCMonth() + 1);
+        const day = pad(date.getUTCDate());
+        const hours = pad(date.getUTCHours());
+        const minutes = pad(date.getUTCMinutes());
+        const seconds = pad(date.getUTCSeconds());
+        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+    } catch (e) {
+        return String(isoString || '');
+    }
 }

@@ -265,7 +265,7 @@ body {
 }
 
 .btn-reconnect {
-    background: var(--status-warn);
+    background: #92400e;
     color: #ffffff;
     border: none;
     border-radius: var(--radius-full);
@@ -281,7 +281,7 @@ body {
 }
 
 .btn-reconnect:hover {
-    background: #b45309;
+    background: #78350f;
     transform: translateY(-1px);
 }
 

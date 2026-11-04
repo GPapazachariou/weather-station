@@ -185,6 +185,24 @@ class TestAccessibilityAndUX:
         assert 'id="toggleRaw"' in html
         assert 'id="toggleRolling"' in html
 
+    def test_reconnect_button_wcag_contrast(self, client):
+        """Reconnect button background must provide >= 4.5:1 WCAG AA contrast against white text."""
+        response = client.get("/static/styles.css")
+        assert response.status_code == 200
+        css = response.data.decode("utf-8")
+        assert ".btn-reconnect {" in css
+        assert "background: #92400e;" in css
+
+    def test_app_js_sol_fixes(self, client):
+        """app.js must include UTC table formatter, live stats arguments, and derived freshness."""
+        response = client.get("/static/app.js")
+        assert response.status_code == 200
+        js = response.data.decode("utf-8")
+        assert "formatUtcTimestamp" in js
+        assert "scheduleCoalescedStatsRefresh" in js
+        assert "latestTelemetryTime" in js
+        assert "fetchStats(q, null, fetchId, station, metric, range)" in js
+
 
 
 # ============================================================================
