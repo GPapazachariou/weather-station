@@ -594,8 +594,7 @@ async def main():
     
     try:
         # Keep server running until shutdown
-        async with server:
-            await shutdown_event.wait()
+        await shutdown_event.wait()
     except KeyboardInterrupt:
         pass
     finally:
@@ -604,8 +603,7 @@ async def main():
         
         # Close listening socket (stop accepting new connections)
         server.close()
-        await server.wait_closed()
-        print("Server socket closed")
+        shutdown_event.set()
 
         # Finish in-flight handlers before placing the FIFO writer sentinel.
         # Idle readers are cancelled after this bounded grace period.
@@ -616,6 +614,11 @@ async def main():
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
+
+        # Python 3.12+ also waits for active connections here, so this must
+        # follow handler cleanup rather than precede the cancellation deadline.
+        await server.wait_closed()
+        print("Server socket closed")
         
         # Set shutdown event and send sentinel to writer task
         shutdown_event.set()

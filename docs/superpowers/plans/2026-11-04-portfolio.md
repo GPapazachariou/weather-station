@@ -43,3 +43,4 @@ Files: Dockerfile.verify, .dockerignore, scripts/verify_recovery.py, docs/reliab
 - Ruling: One PR covers the reliability category. The user's later stop instruction supersedes the earlier all-category roadmap.
 - Evidence: 362 tests passed in the final Docker image; ten targeted reliability tests pass. The baseline Docker image reproduces the shutdown CancelledError. No GitHub workflow changes or CI runs were used for this proof.
 
+- Review round 1 (gpt-6.1-sol, high): S1 blocker confirmed. Python 3.12 server context-manager exit waited for idle connections before the cancellation deadline. Added idle-peer regression (observed timeout), removed the context manager and moved wait_closed after handler cleanup. All 363 Docker tests and Ruff pass; recovery script passes again. No findings declined. Review-only usage was not returned.

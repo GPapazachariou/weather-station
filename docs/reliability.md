@@ -54,9 +54,10 @@ the intentionally lost acknowledgment followed a commit.
 
 To save a report, use `--output /path/to/report.json` with a writable bind mount.
 The checked-in [recovery report](evidence/recovery.json) records the observed
-environment and results. Ten targeted [regression tests](../tests/test_reliability.py)
+environment and results. Eleven targeted [regression tests](../tests/test_reliability.py)
 cover replay, rollback, sequence startup, bounded buffering, transient storage
-failure, framing, sampling cadence, and in-flight shutdown. The full suite also
+failure, framing, sampling cadence, in-flight shutdown, and shutdown while an
+idle peer stays open. The full suite also
 covers queue saturation and duplicate/partially duplicate batches.
 
 ## Boundaries and tradeoffs

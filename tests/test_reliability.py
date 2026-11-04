@@ -264,3 +264,35 @@ async def test_shutdown_commits_and_acknowledges_already_queued_batch(tmp_path, 
         if not main_task.done():
             main_task.cancel()
         await asyncio.gather(main_task, return_exceptions=True)
+
+
+async def test_shutdown_is_bounded_while_idle_peer_remains_open(tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "DB_FILE", str(tmp_path / "idle-shutdown.db"))
+    monkeypatch.setattr(app, "HOST", "127.0.0.1")
+    monkeypatch.setattr(app, "PORT", 0)
+    monkeypatch.setattr(app, "WRITE_ENQUEUE_TIMEOUT", 0.05)
+    monkeypatch.setattr(app, "WRITE_ACK_TIMEOUT", 0.05)
+    for name in ("server", "shutdown_event", "write_queue", "writer_task"):
+        monkeypatch.setattr(app, name, None)
+    monkeypatch.setattr(asyncio.get_running_loop(), "add_signal_handler", lambda *args: None)
+    main_task = asyncio.create_task(app.main())
+    writer = None
+    try:
+        async with asyncio.timeout(3):
+            while app.server is None:
+                await asyncio.sleep(0.001)
+            reader, writer = await asyncio.open_connection("127.0.0.1", app.server.sockets[0].getsockname()[1])
+            while not app.client_tasks:
+                await asyncio.sleep(0.001)
+            await app.shutdown_handler(signal.SIGTERM)
+            # Do not close the peer: server cleanup must enforce the deadline itself.
+            await asyncio.wait_for(asyncio.shield(main_task), 2)
+            assert await reader.read() == b""
+            assert not app.client_tasks
+    finally:
+        if writer:
+            writer.close()
+            await writer.wait_closed()
+        if not main_task.done():
+            main_task.cancel()
+        await asyncio.gather(main_task, return_exceptions=True)
