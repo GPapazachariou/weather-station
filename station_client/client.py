@@ -303,14 +303,17 @@ def buffer_batch(buffer: deque, batch: list, max_capacity: int):
     """
     Append a batch to the buffer with drop-oldest overflow policy.
     
-    If len(buffer) >= max_capacity, drops the oldest batch (popleft)
-    and returns it. Otherwise returns None.
+    Capacity is measured in readings, not batches. Evict whole oldest batches
+    and return their readings so callers can report every dropped sample.
     """
-    dropped = None
-    if len(buffer) >= max_capacity:
-        dropped = buffer.popleft()
+    dropped = []
+    while buffer and sum(map(len, buffer)) + len(batch) > max_capacity:
+        dropped.extend(buffer.popleft())
+    if len(batch) > max_capacity:
+        dropped.extend(batch[:-max_capacity])
+        batch = batch[-max_capacity:]
     buffer.append(batch)
-    return dropped
+    return dropped or None
 
 
 def calculate_backoff(current_backoff: float, max_backoff: float) -> float:
@@ -335,6 +338,8 @@ def is_backpressure_response(response: dict) -> bool:
     return (
         response.get("code") == "backpressure"
         or response.get("reason") == "server_busy"
+        or response.get("reason") == "server_error: write_ack_timeout"
+        or response.get("code") == "retryable"
     )
 
 
@@ -349,7 +354,7 @@ async def fetch_latest_seq(reader, writer, station_id: str, timeout: float = 5.0
     resp = json.loads(line.decode("utf-8"))
     if resp.get("status") == "ok":
         return resp.get("latest_seq")
-    return None
+    raise ConnectionError(f"Sequence synchronization failed: {resp.get('reason', 'unknown')}")
 
 
 async def wait_backoff_period(
@@ -365,13 +370,15 @@ async def wait_backoff_period(
 ):
     """Wait for wait_time seconds while periodically generating and buffering batches."""
     waited = 0.0
+    next_sample = batch_interval
     while waited < wait_time and not shutdown_check():
-        sleep_interval = min(batch_interval, wait_time - waited)
+        sleep_interval = min(next_sample - waited, wait_time - waited)
         await asyncio.sleep(sleep_interval)
         waited += sleep_interval
 
         # Generate and buffer a batch
-        if waited >= batch_interval:
+        if waited >= next_sample:
+            next_sample += batch_interval
             batch_size = random.randint(batch_size_min, batch_size_max)
             start_seq = seq_tracker.next_seq_range(batch_size) if seq_tracker else 0
             batch = generate_batch(station_id, batch_size, start_seq=start_seq)
@@ -412,7 +419,6 @@ async def flush_buffer(
             )
 
             if not response_line:
-                buffer.appendleft(buffered_batch)
                 raise ConnectionError("Server closed connection")
 
             response = json.loads(response_line.decode('utf-8'))
@@ -503,11 +509,17 @@ async def send_batches(config):
             # Reset backoff on successful connection
             current_backoff = base_backoff
             
-            # If at initial state and buffer empty, try synchronizing sequence with server
-            if not synced_initial_seq and not buffer and seq_tracker.current_seq == initial_seq:
+            # Before the first send, reserve IDs above the persisted cursor, including
+            # samples collected during a startup outage. Never renumber a sent batch.
+            if not synced_initial_seq:
                 server_latest_seq = await fetch_latest_seq(reader, writer, station_id, response_timeout)
                 if server_latest_seq is not None:
-                    seq_tracker.current_seq = server_latest_seq + 1
+                    next_seq = max(initial_seq, server_latest_seq + 1)
+                    for pending_batch in buffer:
+                        for reading in pending_batch:
+                            reading["seq"] = next_seq
+                            next_seq += 1
+                    seq_tracker.current_seq = next_seq
                     print(f"[{station_id}] Synchronized sequence from server: resuming at seq={seq_tracker.current_seq}")
                 synced_initial_seq = True
             
@@ -534,6 +546,9 @@ async def send_batches(config):
                     else:
                         current_backoff = base_backoff
                         print(f"[{station_id}] ✓ Buffer flushed successfully")
+
+                if shutdown:
+                    break
 
                 # Generate a batch with monotonic sequence numbers
                 batch_size = random.randint(batch_size_min, batch_size_max)

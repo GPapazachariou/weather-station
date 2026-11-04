@@ -1,0 +1,8 @@
+FROM python:3.12-slim
+WORKDIR /workspace
+COPY requirements-dev.txt ./
+COPY server/requirements.txt server/requirements.txt
+COPY web/requirements.txt web/requirements.txt
+RUN pip install --no-cache-dir -r requirements-dev.txt
+COPY . .
+CMD ["pytest", "-q"]

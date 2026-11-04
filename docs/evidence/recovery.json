@@ -1,0 +1,23 @@
+{
+  "verified_at": "2026-11-04T21:27:44.934690+00:00",
+  "status": "passed",
+  "python": "3.12.16",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+  "sqlite": "3.46.1",
+  "generated_unique": 12,
+  "persisted_unique": 12,
+  "replayed_after_lost_ack": 3,
+  "buffered_during_outage": 8,
+  "missing": 0,
+  "duplicate_rows": 0,
+  "scenarios": [
+    "commit then lose ACK",
+    "retry same batch",
+    "graceful SIGTERM",
+    "buffer during outage",
+    "restart with same database",
+    "SIGKILL after acknowledged commit",
+    "resume sequence after restart"
+  ],
+  "scope": "Process/network failures; not client-process durability or host power loss"
+}
