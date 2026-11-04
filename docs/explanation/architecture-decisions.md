@@ -326,11 +326,11 @@ Error (server error):
 **Why:**
 - **Many concurrent clients:** Asyncio efficiently handles thousands of socket connections with minimal memory overhead (coroutines are cheap). No thread pool needed.
 - **Avoid SQLite "database is locked":** SQLite's default locking is per-connection; multiple concurrent writers or even concurrent readers can trigger lock waits. By funneling all writes through one task, we ensure only one writer ever holds the database lock. This is especially critical for WAL mode, which still has writer contention.
-- **Backpressure:** The queue naturally applies backpressure. If the writer is slow, the queue fills up, and slow clients get enqueued behind fast ones. Clients timeout waiting for insert acknowledgment and can retry or buffer locally.
+- **Backpressure:** The write queue is bounded (`WRITE_QUEUE_MAX`, default 500 batches; `write_queue = asyncio.Queue(maxsize=QUEUE_MAXSIZE)`). If the writer is slow or stalls, the queue fills up and enqueuing times out (`WRITE_ENQUEUE_TIMEOUT`, default 2.0s). The server returns a structured backpressure response (`{"status": "error", "code": "backpressure", "reason": "server_busy", "retry_after": 1}`), prompting clients to buffer locally and back off with jitter. In addition, `WRITE_ACK_TIMEOUT` (default 5.0s) bounds acknowledgment wait time to prevent client tasks from hanging indefinitely.
 - **Graceful shutdown:** The sentinel value `(None, None)` signals the writer task to exit after flushing remaining batches.
 
 **Tradeoffs:**
-- **Single-writer bottleneck:** If the database writer becomes the bottleneck (very high write rate, slow disk), the queue could grow indefinitely, consuming memory. Mitigation: monitor queue depth; add metrics. For stress testing, observe CPU and disk I/O.
+- **Single-writer bottleneck:** If the database writer becomes the bottleneck (very high write rate, slow disk), the queue could grow. Mitigation: Bounded queue (`QUEUE_MAXSIZE`) caps memory usage and sheds/backpressures excess load back to producers. Clients buffer locally and retry with exponential backoff once the queue clears.
 - **No per-client write ordering guarantee:** Two clients' batches could be reordered in the queue. If ordering per client is required, add client ID to the future. Current implementation does not guarantee order across clients.
 - **Complex cancellation handling:** When a client disconnects, the `handle_client()` coroutine exits, but the future in the queue still exists. The writer task must check `result_future.done()` and `result_future.cancelled()` to avoid setting state on a completed future. Adds code complexity.
 

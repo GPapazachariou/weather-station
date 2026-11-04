@@ -454,3 +454,216 @@ class TestServerTcpEndToEnd:
 
             await app.write_queue.put(app._WRITER_SENTINEL)
             await writer
+
+
+# ============================================================================
+# 6. Bounded Queue, Backpressure, and ACK Timeout Tests
+# ============================================================================
+
+
+class TestBackpressureAndQueueBounds:
+    """Tests for bounded write queue, backpressure responses, and writer ACK timeouts."""
+
+    def test_queue_and_timeout_defaults(self):
+        """Verify default bounds and timeouts."""
+        assert app.QUEUE_MAXSIZE == 500
+        assert app.WRITE_ENQUEUE_TIMEOUT == 2.0
+        assert app.WRITE_ACK_TIMEOUT == 5.0
+
+    async def test_enqueue_batch_raises_backpressure_when_queue_full(self):
+        """When write_queue is at maxsize and enqueue times out, BackpressureError is raised."""
+        original_queue = app.write_queue
+        original_timeout = app.WRITE_ENQUEUE_TIMEOUT
+        try:
+            # Set a 1-item queue and tiny timeout
+            app.write_queue = asyncio.Queue(maxsize=1)
+            app.WRITE_ENQUEUE_TIMEOUT = 0.05
+
+            # Fill queue to capacity
+            dummy_future = asyncio.get_running_loop().create_future()
+            await app.write_queue.put(([{"station_id": "FILL"}], dummy_future))
+            assert app.write_queue.full()
+
+            batch = [
+                {
+                    "station_id": "BLOCKED",
+                    "timestamp": "2026-10-02T01:00:00Z",
+                    "temperature": 20.0,
+                    "humidity": 50.0,
+                    "windspeed": 5.0,
+                }
+            ]
+
+            with pytest.raises(app.BackpressureError, match="server_busy"):
+                await app.enqueue_batch(batch)
+        finally:
+            app.write_queue = original_queue
+            app.WRITE_ENQUEUE_TIMEOUT = original_timeout
+
+    async def test_enqueue_batch_ack_timeout(self):
+        """When writer task hangs or fails to resolve future, enqueue_batch raises TimeoutError."""
+        original_queue = app.write_queue
+        original_ack_timeout = app.WRITE_ACK_TIMEOUT
+        try:
+            app.write_queue = asyncio.Queue(maxsize=10)
+            app.WRITE_ACK_TIMEOUT = 0.05  # 50ms ACK timeout
+
+            batch = [
+                {
+                    "station_id": "HANGING",
+                    "timestamp": "2026-10-02T01:00:00Z",
+                    "temperature": 20.0,
+                    "humidity": 50.0,
+                    "windspeed": 5.0,
+                }
+            ]
+
+            # Enqueue without running a writer task - future will never be resolved
+            with pytest.raises(TimeoutError, match="write_ack_timeout"):
+                await app.enqueue_batch(batch)
+
+            # Verify future was cancelled to avoid leaking or setting result later
+            queued_batch, queued_future = await app.write_queue.get()
+            assert queued_future.cancelled()
+        finally:
+            app.write_queue = original_queue
+            app.WRITE_ACK_TIMEOUT = original_ack_timeout
+
+    async def test_tcp_backpressure_response_structure(self, server_test_db: Path):
+        """TCP server returns structured backpressure response when queue is saturated."""
+        import json
+
+        await app.init_database()
+        original_queue = app.write_queue
+        original_timeout = app.WRITE_ENQUEUE_TIMEOUT
+
+        try:
+            # Capacity 1 queue with short enqueue timeout
+            app.write_queue = asyncio.Queue(maxsize=1)
+            app.WRITE_ENQUEUE_TIMEOUT = 0.05
+
+            # Fill queue to saturation
+            dummy_future = asyncio.get_running_loop().create_future()
+            await app.write_queue.put(([{"station_id": "DUMMY"}], dummy_future))
+
+            tcp_server = await asyncio.start_server(app.handle_client, "127.0.0.1", 0)
+            port = tcp_server.sockets[0].getsockname()[1]
+            reader, socket_writer = await asyncio.open_connection("127.0.0.1", port)
+
+            try:
+                batch = [
+                    {
+                        "station_id": "STN-BP",
+                        "timestamp": "2026-10-02T01:00:00Z",
+                        "temperature": 22.0,
+                        "humidity": 50.0,
+                        "windspeed": 5.0,
+                    }
+                ]
+                socket_writer.write((json.dumps(batch) + "\n").encode())
+                await socket_writer.drain()
+
+                resp_line = await reader.readline()
+                resp = json.loads(resp_line.decode())
+
+                assert resp == {
+                    "status": "error",
+                    "code": "backpressure",
+                    "reason": "server_busy",
+                    "retry_after": 1,
+                }
+            finally:
+                socket_writer.close()
+                await socket_writer.wait_closed()
+                tcp_server.close()
+                await tcp_server.wait_closed()
+        finally:
+            app.write_queue = original_queue
+            app.WRITE_ENQUEUE_TIMEOUT = original_timeout
+
+    async def test_writer_delay_causes_backpressure_acceptance_criteria(self, server_test_db: Path):
+        """
+        Acceptance Criteria: Injecting a delay in the writer task causes server to respond with
+        backpressure when queue exceeds maxsize, without crashing.
+        """
+        import json
+
+        await app.init_database()
+        original_queue = app.write_queue
+        original_enqueue_timeout = app.WRITE_ENQUEUE_TIMEOUT
+
+        try:
+            # Set a small queue (maxsize=1) and short enqueue timeout
+            app.write_queue = asyncio.Queue(maxsize=1)
+            app.WRITE_ENQUEUE_TIMEOUT = 0.05
+
+            # Slow writer task that sleeps 0.5s per batch
+            async def slow_writer_task():
+                async with aiosqlite.connect(app.DB_FILE):
+                    while True:
+                        item = await app.write_queue.get()
+                        if item == app._WRITER_SENTINEL:
+                            break
+                        batch, fut = item
+                        await asyncio.sleep(0.5)
+                        if not fut.cancelled() and not fut.done():
+                            fut.set_result(len(batch))
+
+            writer = asyncio.create_task(slow_writer_task())
+
+            tcp_server = await asyncio.start_server(app.handle_client, "127.0.0.1", 0)
+            port = tcp_server.sockets[0].getsockname()[1]
+
+            try:
+                # 3 concurrent client connections to the server
+                r1, w1 = await asyncio.open_connection("127.0.0.1", port)
+                r2, w2 = await asyncio.open_connection("127.0.0.1", port)
+                r3, w3 = await asyncio.open_connection("127.0.0.1", port)
+
+                try:
+                    batch_1 = [{"station_id": "SLOW-1", "timestamp": "2026-10-02T01:00:00Z", "temperature": 20.0, "humidity": 50.0, "windspeed": 5.0}]
+                    batch_2 = [{"station_id": "SLOW-2", "timestamp": "2026-10-02T01:01:00Z", "temperature": 21.0, "humidity": 51.0, "windspeed": 6.0}]
+                    batch_3 = [{"station_id": "SLOW-3", "timestamp": "2026-10-02T01:02:00Z", "temperature": 22.0, "humidity": 52.0, "windspeed": 7.0}]
+
+                    # Client 1 sends batch 1 (writer starts processing and sleeps 0.5s)
+                    w1.write((json.dumps(batch_1) + "\n").encode())
+                    await w1.drain()
+                    await asyncio.sleep(0.02)
+
+                    # Client 2 sends batch 2 (fills the 1-slot queue while writer works on batch 1)
+                    w2.write((json.dumps(batch_2) + "\n").encode())
+                    await w2.drain()
+                    await asyncio.sleep(0.02)
+
+                    # Client 3 sends batch 3 (queue is full, times out after 0.05s -> backpressure!)
+                    w3.write((json.dumps(batch_3) + "\n").encode())
+                    await w3.drain()
+
+                    # Client 3 receives backpressure error response
+                    resp_3 = json.loads((await r3.readline()).decode())
+                    assert resp_3["status"] == "error"
+                    assert resp_3["code"] == "backpressure"
+                    assert resp_3["reason"] == "server_busy"
+                    assert resp_3["retry_after"] == 1
+
+                    # Client 1 and 2 complete successfully once writer finishes
+                    resp_1 = json.loads((await r1.readline()).decode())
+                    assert resp_1["status"] == "ok"
+
+                    resp_2 = json.loads((await r2.readline()).decode())
+                    assert resp_2["status"] == "ok"
+                finally:
+                    w1.close()
+                    await w1.wait_closed()
+                    w2.close()
+                    await w2.wait_closed()
+                    w3.close()
+                    await w3.wait_closed()
+            finally:
+                tcp_server.close()
+                await tcp_server.wait_closed()
+                await app.write_queue.put(app._WRITER_SENTINEL)
+                await writer
+        finally:
+            app.write_queue = original_queue
+            app.WRITE_ENQUEUE_TIMEOUT = original_enqueue_timeout

@@ -271,3 +271,194 @@ class TestClientConfig:
         monkeypatch.setattr("sys.argv", ["client.py", "--batch-min", "10", "--batch-max", "5"])
         with pytest.raises(SystemExit):
             client.load_config()
+
+
+# ============================================================================
+# 5. Client Backpressure Handling & Buffering Tests
+# ============================================================================
+
+
+class TestClientBackpressure:
+    """Tests for client backpressure detection, jittered backoff, and local buffering."""
+
+    @pytest.mark.parametrize(
+        "resp,expected",
+        [
+            ({"status": "error", "code": "backpressure", "reason": "server_busy", "retry_after": 1}, True),
+            ({"status": "error", "reason": "server_busy"}, True),
+            ({"status": "error", "code": "backpressure"}, True),
+            ({"status": "ok", "inserted": 5}, False),
+            ({"status": "error", "reason": "invalid_json"}, False),
+            ("not a dict", False),
+            (None, False),
+        ],
+    )
+    def test_is_backpressure_response(self, resp, expected):
+        """is_backpressure_response should accurately identify server busy / backpressure responses."""
+        assert client.is_backpressure_response(resp) is expected
+
+    async def test_flush_buffer_success(self):
+        """flush_buffer should send all buffered batches when server responds ok."""
+        import json
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_reader = AsyncMock()
+        mock_writer = AsyncMock()
+        mock_writer.write = MagicMock()
+
+        mock_reader.readline.side_effect = [
+            (json.dumps({"status": "ok", "inserted": 1}) + "\n").encode(),
+            (json.dumps({"status": "ok", "inserted": 1}) + "\n").encode(),
+        ]
+
+        buf = deque([
+            [{"station_id": "STN-1", "temperature": 20.0}],
+            [{"station_id": "STN-1", "temperature": 21.0}],
+        ])
+
+        status, resp = await client.flush_buffer(
+            mock_reader, mock_writer, buf, "STN-1", 5.0, 5.0, lambda: False
+        )
+
+        assert status == "ok"
+        assert resp is None
+        assert len(buf) == 0
+
+    async def test_flush_buffer_backpressure_restores_batch(self):
+        """When flush encounters backpressure, the popped batch must be restored at head of buffer."""
+        import json
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_reader = AsyncMock()
+        mock_writer = AsyncMock()
+        mock_writer.write = MagicMock()
+
+        bp_response = {
+            "status": "error",
+            "code": "backpressure",
+            "reason": "server_busy",
+            "retry_after": 1,
+        }
+        mock_reader.readline.side_effect = [
+            (json.dumps(bp_response) + "\n").encode(),
+        ]
+
+        batch_1 = [{"station_id": "STN-1", "temp": 1}]
+        batch_2 = [{"station_id": "STN-1", "temp": 2}]
+        buf = deque([batch_1, batch_2])
+
+        status, resp = await client.flush_buffer(
+            mock_reader, mock_writer, buf, "STN-1", 5.0, 5.0, lambda: False
+        )
+
+        assert status == "backpressure"
+        assert resp == bp_response
+        # Must retain original order with batch_1 at the front
+        assert len(buf) == 2
+        assert buf[0] == batch_1
+        assert buf[1] == batch_2
+
+    async def test_flush_buffer_connection_error_restores_batch(self):
+        """When flush encounters a connection drop or timeout, the popped batch must be restored at head of buffer."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_reader = AsyncMock()
+        mock_writer = AsyncMock()
+        mock_writer.write = MagicMock()
+        mock_writer.drain.side_effect = ConnectionResetError("Connection reset by peer")
+
+        batch_1 = [{"station_id": "STN-1", "temp": 1}]
+        batch_2 = [{"station_id": "STN-1", "temp": 2}]
+        buf = deque([batch_1, batch_2])
+
+        with pytest.raises(ConnectionResetError):
+            await client.flush_buffer(
+                mock_reader, mock_writer, buf, "STN-1", 5.0, 5.0, lambda: False
+            )
+
+        # Batch 1 must be restored at the front of the deque without data loss
+        assert len(buf) == 2
+        assert buf[0] == batch_1
+        assert buf[1] == batch_2
+
+    async def test_wait_backoff_period_buffers_batches(self):
+        """wait_backoff_period should sleep and buffer batches periodically."""
+        buf = deque()
+        # Wait 0.15s with 0.05s interval -> generates batches
+        await client.wait_backoff_period(
+            wait_time=0.12,
+            batch_interval=0.05,
+            batch_size_min=1,
+            batch_size_max=1,
+            station_id="STN-TEST",
+            buffer=buf,
+            max_buffer_records=10,
+            shutdown_check=lambda: False,
+        )
+        assert len(buf) >= 1
+
+    async def test_connected_client_buffers_on_backpressure_and_recovers(self):
+        """
+        Acceptance Criteria: Connected client buffers unsent batches locally when server responds
+        with backpressure, backs off, and retries once queue clears.
+        """
+        import asyncio
+        import json
+
+        # Simulated server that responds with backpressure on first request, ok on second
+        request_count = 0
+
+        async def mock_server_handler(reader, writer):
+            nonlocal request_count
+            while True:
+                line = await reader.readline()
+                if not line:
+                    break
+                request_count += 1
+                if request_count == 1:
+                    resp = {
+                        "status": "error",
+                        "code": "backpressure",
+                        "reason": "server_busy",
+                        "retry_after": 0.05,
+                    }
+                else:
+                    resp = {"status": "ok", "inserted": 1}
+                writer.write((json.dumps(resp) + "\n").encode())
+                await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        server = await asyncio.start_server(mock_server_handler, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        buffer = deque()
+
+        try:
+            # 1. Send first batch -> server returns backpressure
+            batch_1 = client.generate_batch("STN-AUTO", 1)
+            writer.write((json.dumps(batch_1) + "\n").encode())
+            await writer.drain()
+
+            resp_line = await reader.readline()
+            resp = json.loads(resp_line.decode())
+            assert client.is_backpressure_response(resp)
+
+            # Client buffers the unsent batch
+            client.buffer_batch(buffer, batch_1, 100)
+            assert len(buffer) == 1
+            assert buffer[0] == batch_1
+
+            # 2. Flush buffer now that server accepts writes
+            flush_status, _ = await client.flush_buffer(
+                reader, writer, buffer, "STN-AUTO", 2.0, 2.0, lambda: False
+            )
+            assert flush_status == "ok"
+            assert len(buffer) == 0
+            assert request_count == 2
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            server.close()
+            await server.wait_closed()
