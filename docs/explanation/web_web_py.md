@@ -16,8 +16,23 @@ The Flask web application provides a REST API and HTML dashboard for visualizing
 - Aggregate statistics: latest, average, min, max for selected metrics
 - Handle time-range queries (6h, 24h) or record-count limits (10–500)
 - Auto-detect wind column name (windspeed vs wind_speed) for compatibility
+- Automatically ensure compound database indexes (idx_readings_station_ts, idx_readings_station_id_desc) exist when running independently
 
 ## Important Blocks
+
+### Block: Database Index Initialization & Idempotent Verification
+
+**Where:** `init_db_indexes()`, `@app.before_request`, `_indexes_checked_db` cache
+
+**What it does:**
+1. Check if SQLite database file and `readings` table exist
+2. Idempotently execute `CREATE INDEX IF NOT EXISTS idx_readings_station_ts ON readings(station_id, timestamp DESC)` and `idx_readings_station_id_desc ON readings(station_id, id DESC)`
+3. Cache check per `DB_PATH` to eliminate overhead on subsequent requests
+4. Run automatically in `__main__` on startup and on incoming requests via `@app.before_request`
+
+**Why it matters:**
+- Enables running `web.py` independently against existing databases without relying on `server/app.py` startup
+- Avoids expensive full table scans and enforces sub-millisecond query plan optimization
 
 ### Block: Database Connection & Configuration
 

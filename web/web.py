@@ -40,7 +40,63 @@ VALID_METRICS = {"temperature", "humidity", "windspeed", "wind_speed"}
 # Cache for detected wind column name
 _wind_column_cache = None
 
+# Cache for database index verification
+_indexes_checked_db = None
+
 app = Flask(__name__, template_folder="templates", static_folder="static")
+
+
+def init_db_indexes(db_path=None):
+    """Ensure database compound indexes are initialized if readings table exists.
+
+    Creates idx_readings_station_ts and idx_readings_station_id_desc idempotently
+    to prevent full table scans when web service is executed independently.
+    """
+    global _indexes_checked_db
+    target_path = Path(db_path) if db_path is not None else DB_PATH
+    if not target_path.exists():
+        return False
+
+    try:
+        if db_path is not None:
+            conn = sqlite3.connect(str(target_path), check_same_thread=False, timeout=5.0)
+        else:
+            conn = get_db()
+        with contextlib.closing(conn) as c:
+            cursor = c.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='readings'"
+            )
+            if cursor.fetchone() is None:
+                return False
+
+            c.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_readings_station_ts
+                ON readings(station_id, timestamp DESC)
+                """
+            )
+            c.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_readings_station_id_desc
+                ON readings(station_id, id DESC)
+                """
+            )
+            c.commit()
+            if db_path is None or str(target_path) == str(DB_PATH):
+                _indexes_checked_db = str(DB_PATH)
+            logger.info(f"Database compound indexes initialized for {target_path}")
+            return True
+    except Exception as e:
+        logger.warning(f"Could not verify or initialize database indexes: {e}")
+        return False
+
+
+@app.before_request
+def _ensure_indexes_before_request():
+    """Ensure indexes on request if not already verified for the current DB."""
+    global _indexes_checked_db
+    if _indexes_checked_db != str(DB_PATH):
+        init_db_indexes()
 
 
 def detect_wind_column():
@@ -366,5 +422,6 @@ if __name__ == "__main__":
         # Detect and log wind column name
         wind_col = detect_wind_column()
         logger.info(f"Using wind column name: {wind_col}")
+        init_db_indexes()
 
     app.run(host=WEB_HOST, port=WEB_PORT, debug=False, use_reloader=False)

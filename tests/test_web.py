@@ -403,3 +403,167 @@ class TestSchemaAndUtilities:
         with patch("web.get_db", side_effect=sqlite3.OperationalError("error")):
             web._wind_column_cache = None
             assert web.detect_wind_column() == "windspeed"
+
+
+# ============================================================================
+# 6. Database Compound Index Initialization Tests (Issue #6)
+# ============================================================================
+
+
+class TestDatabaseIndexInitialization:
+    """Tests for standalone database index initialization (Issue #6)."""
+
+    def test_init_db_indexes_creates_indexes_on_existing_table(self, tmp_path: Path, monkeypatch):
+        """init_db_indexes() should create compound indexes if readings table exists."""
+        db_file = tmp_path / "unindexed.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute(
+            """
+            CREATE TABLE readings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                station_id TEXT,
+                timestamp TEXT,
+                temperature REAL,
+                humidity REAL,
+                windspeed REAL
+            )
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(web, "DB_PATH", db_file)
+        monkeypatch.setattr(web, "_indexes_checked_db", None)
+
+        assert web.init_db_indexes() is True
+
+        conn = sqlite3.connect(str(db_file))
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        indexes = {row[0] for row in cursor.fetchall()}
+        conn.close()
+
+        assert "idx_readings_station_ts" in indexes
+        assert "idx_readings_station_id_desc" in indexes
+
+    def test_init_db_indexes_is_idempotent(self, tmp_path: Path, monkeypatch):
+        """Calling init_db_indexes() multiple times should succeed without error."""
+        db_file = tmp_path / "idempotent.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("CREATE TABLE readings (id INTEGER PRIMARY KEY, station_id TEXT, timestamp TEXT)")
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(web, "DB_PATH", db_file)
+        monkeypatch.setattr(web, "_indexes_checked_db", None)
+
+        assert web.init_db_indexes() is True
+        assert web.init_db_indexes() is True
+
+    def test_init_db_indexes_with_explicit_db_path(self, tmp_path: Path):
+        """init_db_indexes(db_path) should create indexes on explicit path."""
+        db_file = tmp_path / "explicit.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("CREATE TABLE readings (id INTEGER PRIMARY KEY, station_id TEXT, timestamp TEXT)")
+        conn.commit()
+        conn.close()
+
+        assert web.init_db_indexes(db_file) is True
+
+        conn = sqlite3.connect(str(db_file))
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        indexes = {row[0] for row in cursor.fetchall()}
+        conn.close()
+
+        assert "idx_readings_station_ts" in indexes
+        assert "idx_readings_station_id_desc" in indexes
+
+    def test_init_db_indexes_no_db_file(self, tmp_path: Path):
+        """Non-existent DB file should return False without raising an error."""
+        missing_db = tmp_path / "nonexistent.db"
+        assert web.init_db_indexes(missing_db) is False
+        assert not missing_db.exists()
+
+    def test_init_db_indexes_no_readings_table(self, tmp_path: Path):
+        """DB without readings table should return False without creating indexes."""
+        db_file = tmp_path / "other.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("CREATE TABLE other_table (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        assert web.init_db_indexes(db_file) is False
+
+        conn = sqlite3.connect(str(db_file))
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        indexes = cursor.fetchall()
+        conn.close()
+        assert len(indexes) == 0
+
+    def test_init_db_indexes_handles_db_exception(self, monkeypatch):
+        """Database exception during initialization should log warning and return False."""
+        with patch("web.get_db", side_effect=sqlite3.OperationalError("disk error")):
+            with patch.object(Path, "exists", return_value=True):
+                monkeypatch.setattr(web, "_indexes_checked_db", None)
+                assert web.init_db_indexes() is False
+
+    def test_before_request_initializes_indexes_automatically(self, tmp_path: Path, monkeypatch):
+        """Incoming HTTP requests trigger index initialization automatically."""
+        db_file = tmp_path / "auto_init.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("CREATE TABLE readings (id INTEGER PRIMARY KEY, station_id TEXT, timestamp TEXT)")
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(web, "DB_PATH", db_file)
+        monkeypatch.setattr(web, "_indexes_checked_db", None)
+
+        with web.app.test_client() as client:
+            res = client.get("/api/stations")
+            assert res.status_code == 200
+
+        conn = sqlite3.connect(str(db_file))
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        indexes = {row[0] for row in cursor.fetchall()}
+        conn.close()
+
+        assert "idx_readings_station_ts" in indexes
+        assert "idx_readings_station_id_desc" in indexes
+
+    def test_independent_web_query_uses_index_query_plan(self, tmp_path: Path):
+        """Verify query plan uses index after web initialization without server init."""
+        db_file = tmp_path / "query_plan.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute(
+            """
+            CREATE TABLE readings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                station_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                temperature REAL NOT NULL,
+                humidity REAL NOT NULL,
+                windspeed REAL NOT NULL
+            )
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        assert web.init_db_indexes(db_file) is True
+
+        conn = sqlite3.connect(str(db_file))
+        cursor = conn.execute(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT timestamp, temperature
+            FROM readings
+            WHERE station_id = 'ST-001' AND temperature IS NOT NULL
+            ORDER BY timestamp DESC
+            LIMIT 10
+            """
+        )
+        plan = " ".join(row[3] for row in cursor.fetchall())
+        conn.close()
+
+        assert "USING INDEX idx_readings_station_ts" in plan
+        assert "SCAN" not in plan
+
