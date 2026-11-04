@@ -4,13 +4,15 @@ Minimal Flask app for visualizing weather data from SQLite database.
 """
 
 import contextlib
+import json
 import logging
 import os
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -337,6 +339,7 @@ def api_readings():
       - metric (required): temperature, humidity, or windspeed
       - range (optional): 6h, 24h (time-based) or limit param for record-based
       - limit (optional): 10, 50, 100, 500 (for last n values)
+      - since (optional): ISO timestamp cursor (fetches points strictly after timestamp)
     
     Returns:
       {"points": [{"t": "2025-12-25T10:00:00", "v": 23.1}, ...]}
@@ -346,6 +349,7 @@ def api_readings():
     metric = request.args.get("metric", "").strip()
     time_range = request.args.get("range", "24h").strip()
     limit = request.args.get("limit", "").strip()
+    since = request.args.get("since", "").strip()
 
     # Validation
     if not station_id or metric not in VALID_METRICS:
@@ -353,7 +357,7 @@ def api_readings():
 
     # Determine if we're using time-based or record-based filtering
     use_limit = limit and limit in VALID_LIMITS
-    if not use_limit and time_range not in VALID_RANGES:
+    if not use_limit and not since and time_range not in VALID_RANGES:
         return jsonify({"error": "Invalid range or limit", "points": []}), 400
 
     # Whitelist safety check for dynamic metric column
@@ -362,12 +366,24 @@ def api_readings():
         return jsonify({"error": "Invalid metric", "points": []}), 400
 
     # Calculate UTC time window (if time-based)
-    cutoff_dt = datetime.now(timezone.utc) - VALID_RANGES[time_range] if not use_limit else None
+    cutoff_dt = datetime.now(timezone.utc) - VALID_RANGES[time_range] if not use_limit and not since else None
     cutoff_iso = cutoff_dt.isoformat() if cutoff_dt else None
 
     try:
         with contextlib.closing(get_db()) as conn:
-            if use_limit:
+            if since:
+                cursor = conn.execute(
+                    f"""
+                    SELECT timestamp, {db_metric}
+                    FROM readings
+                    WHERE station_id = ? AND timestamp > ? AND {db_metric} IS NOT NULL
+                    ORDER BY timestamp ASC
+                    """,
+                    (station_id, since),
+                )
+                rows = cursor.fetchall()
+                points = [{"t": row["timestamp"], "v": row[db_metric]} for row in rows]
+            elif use_limit:
                 max_records = VALID_LIMITS[limit]
                 cursor = conn.execute(
                     f"""
@@ -395,7 +411,7 @@ def api_readings():
                 rows = cursor.fetchall()
                 points = [{"t": row["timestamp"], "v": row[db_metric]} for row in rows]
 
-        range_label = f"limit={limit}" if use_limit else f"range={time_range}"
+        range_label = f"since={since}" if since else (f"limit={limit}" if use_limit else f"range={time_range}")
         logger.info(
             f"Readings for {station_id}/{metric}/{range_label}: {len(points)} points"
         )
@@ -404,6 +420,146 @@ def api_readings():
     except Exception as e:
         logger.error(f"Error fetching readings: {e}")
         return jsonify({"points": []})
+
+
+@app.route("/api/stream", methods=["GET"])
+def api_stream():
+    """Server-Sent Events (SSE) live telemetry stream.
+
+    Query params:
+      - station_id (optional): Filter readings by station ID.
+      - since_id (optional): Fetch records with id > since_id.
+      - since (optional): Timestamp cursor if since_id not provided.
+      - limit / max_events (optional): Stop generator after N events (useful for tests).
+      - poll_interval (optional): Polling frequency in seconds (default: 1.0s).
+
+    Headers:
+      - Last-Event-ID (optional): Resume stream from last received row id.
+    """
+    station_id = request.args.get("station_id", "").strip()
+
+    # Cursor handling: header 'Last-Event-ID' or query param 'since_id' / 'last_id'
+    last_id_param = request.headers.get("Last-Event-ID") or request.args.get("since_id") or request.args.get("last_id")
+    since_timestamp = request.args.get("since", "").strip()
+    max_events_param = request.args.get("limit") or request.args.get("max_events")
+    poll_interval_param = request.args.get("poll_interval") or request.args.get("interval")
+
+    max_events = int(max_events_param) if max_events_param and max_events_param.isdigit() else None
+    try:
+        poll_interval = float(poll_interval_param) if poll_interval_param is not None else 1.0
+    except ValueError:
+        poll_interval = 1.0
+
+    initial_last_id = None
+    if last_id_param is not None:
+        try:
+            initial_last_id = int(last_id_param)
+        except ValueError:
+            initial_last_id = None
+
+    def event_stream():
+        nonlocal initial_last_id
+        last_id = initial_last_id
+        wind_col = detect_wind_column()
+        events_yielded = 0
+
+        conn = get_db()
+        try:
+            # If no cursor provided, default to current MAX(id) so client only receives live updates
+            if last_id is None:
+                if since_timestamp:
+                    st_filter = " AND station_id = ?" if station_id else ""
+                    st_args = (since_timestamp, station_id) if station_id else (since_timestamp,)
+                    cursor = conn.execute(
+                        f"SELECT MIN(id) FROM readings WHERE timestamp >= ?{st_filter}",
+                        st_args,
+                    )
+                    row = cursor.fetchone()
+                    if row and row[0] is not None:
+                        last_id = max(0, row[0] - 1)
+                    else:
+                        st_clause = " WHERE station_id = ?" if station_id else ""
+                        max_args = (station_id,) if station_id else ()
+                        cursor = conn.execute(
+                            f"SELECT COALESCE(MAX(id), 0) FROM readings{st_clause}",
+                            max_args,
+                        )
+                        max_row = cursor.fetchone()
+                        last_id = max_row[0] if max_row and max_row[0] is not None else 0
+                else:
+                    if station_id:
+                        cursor = conn.execute(
+                            "SELECT COALESCE(MAX(id), 0) FROM readings WHERE station_id = ?",
+                            (station_id,),
+                        )
+                    else:
+                        cursor = conn.execute("SELECT COALESCE(MAX(id), 0) FROM readings")
+                    row = cursor.fetchone()
+                    last_id = row[0] if row and row[0] is not None else 0
+
+            keepalive_counter = 0
+            while True:
+                try:
+                    query = f"""
+                        SELECT id, station_id, timestamp, temperature, humidity, {wind_col}
+                        FROM readings
+                        WHERE id > ?
+                    """
+                    params = [last_id]
+                    if station_id:
+                        query += " AND station_id = ?"
+                        params.append(station_id)
+                    query += " ORDER BY id ASC LIMIT 50"
+
+                    cursor = conn.execute(query, tuple(params))
+                    rows = cursor.fetchall()
+
+                    if rows:
+                        for row in rows:
+                            last_id = row["id"]
+                            data = {
+                                "id": row["id"],
+                                "station_id": row["station_id"],
+                                "timestamp": row["timestamp"],
+                                "temperature": row["temperature"],
+                                "humidity": row["humidity"],
+                                "windspeed": row[wind_col],
+                                "wind_speed": row[wind_col],
+                            }
+                            yield f"id: {last_id}\ndata: {json.dumps(data)}\n\n"
+                            events_yielded += 1
+                            if max_events is not None and events_yielded >= max_events:
+                                return
+                        keepalive_counter = 0
+                    else:
+                        keepalive_counter += 1
+                        if keepalive_counter >= 15:
+                            yield ": keepalive\n\n"
+                            keepalive_counter = 0
+                        if max_events is not None and events_yielded >= max_events:
+                            return
+
+                    if max_events is not None and not rows:
+                        return
+
+                    time.sleep(poll_interval)
+                except sqlite3.OperationalError as e:
+                    logger.warning(f"Database error in event stream: {e}")
+                    time.sleep(poll_interval)
+                except GeneratorExit:
+                    logger.info("Client disconnected from event stream")
+                    break
+        finally:
+            conn.close()
+
+    response = Response(
+        event_stream(),
+        mimetype="text/event-stream",
+    )
+    response.headers["Cache-Control"] = "no-cache, no-transform"
+    response.headers["X-Accel-Buffering"] = "no"
+    response.headers["Connection"] = "keep-alive"
+    return response
 
 
 if __name__ == "__main__":
