@@ -10,10 +10,12 @@ Tests cover:
 - Dynamic schema detection (detect_wind_column for 'windspeed' vs 'wind_speed')
 """
 
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import quote
 
 import pytest
 
@@ -101,6 +103,8 @@ def test_index_page(client):
     response = client.get("/")
     assert response.status_code == 200
     assert b"Weather Station Dashboard" in response.data
+    assert b"live-indicator" in response.data
+    assert b"last-updated" in response.data
 
 
 # ============================================================================
@@ -566,4 +570,152 @@ class TestDatabaseIndexInitialization:
 
         assert "USING INDEX idx_readings_station_ts" in plan
         assert "SCAN" not in plan
+
+
+# ============================================================================
+# 7. Server-Sent Events (SSE) Live Streaming Tests (Issue #8)
+# ============================================================================
+
+
+class TestStreamApi:
+    """Tests for GET /api/stream Server-Sent Events endpoint."""
+
+    def test_stream_headers_and_mimetype(self, client):
+        """Endpoint should return 200 with text/event-stream and streaming headers."""
+        response = client.get("/api/stream?max_events=1&poll_interval=0.01")
+        assert response.status_code == 200
+        assert "text/event-stream" in response.content_type
+        assert response.headers.get("Cache-Control") == "no-cache, no-transform"
+        assert response.headers.get("X-Accel-Buffering") == "no"
+        assert response.headers.get("Connection") == "keep-alive"
+
+    def test_stream_yields_events_with_since_id(self, client):
+        """Stream should yield readings with id > since_id in SSE format."""
+        response = client.get("/api/stream?since_id=0&limit=3&poll_interval=0.01")
+        assert response.status_code == 200
+        text = response.data.decode("utf-8")
+
+        assert "id:" in text
+        assert "data:" in text
+
+        # Parse SSE messages
+        events = [chunk for chunk in text.split("\n\n") if chunk.strip()]
+        assert len(events) >= 1
+        first_event = events[0]
+        assert "id: 1" in first_event
+
+        data_line = [line for line in first_event.split("\n") if line.startswith("data: ")][0]
+        json_str = data_line[len("data: ") :]
+        reading = json.loads(json_str)
+
+        assert reading["id"] == 1
+        assert "station_id" in reading
+        assert "timestamp" in reading
+        assert "temperature" in reading
+        assert "humidity" in reading
+        assert "windspeed" in reading
+        assert "wind_speed" in reading
+
+    def test_stream_filters_by_station_id(self, client):
+        """Stream should only yield readings matching station_id when specified."""
+        response = client.get("/api/stream?station_id=STATION-002&since_id=0&limit=5&poll_interval=0.01")
+        assert response.status_code == 200
+        text = response.data.decode("utf-8")
+
+        events = [chunk for chunk in text.split("\n\n") if chunk.strip() and not chunk.startswith(":")]
+        for ev in events:
+            data_line = [line for line in ev.split("\n") if line.startswith("data: ")][0]
+            reading = json.loads(data_line[len("data: ") :])
+            assert reading["station_id"] == "STATION-002"
+
+    def test_stream_supports_last_event_id_header(self, client):
+        """Stream should resume from Last-Event-ID header cursor."""
+        response = client.get(
+            "/api/stream?station_id=STATION-001&limit=2&poll_interval=0.01",
+            headers={"Last-Event-ID": "58"},
+        )
+        assert response.status_code == 200
+        text = response.data.decode("utf-8")
+        events = [chunk for chunk in text.split("\n\n") if chunk.strip() and not chunk.startswith(":")]
+        assert len(events) == 2
+
+        first_data = json.loads([line for line in events[0].split("\n") if line.startswith("data: ")][0][6:])
+        second_data = json.loads([line for line in events[1].split("\n") if line.startswith("data: ")][0][6:])
+        assert first_data["id"] == 59
+        assert second_data["id"] == 60
+
+    def test_stream_supports_since_timestamp(self, client, test_db_path: Path):
+        """Stream should accept since ISO timestamp cursor."""
+        conn = sqlite3.connect(str(test_db_path))
+        conn.row_factory = sqlite3.Row
+        target_row = conn.execute("SELECT timestamp, id FROM readings WHERE id = 55").fetchone()
+        conn.close()
+
+        target_ts = target_row["timestamp"]
+        response = client.get(
+            f"/api/stream?since={quote(target_ts)}&limit=3&poll_interval=0.01"
+        )
+        assert response.status_code == 200
+        text = response.data.decode("utf-8")
+        events = [chunk for chunk in text.split("\n\n") if chunk.strip() and not chunk.startswith(":")]
+        assert len(events) >= 1
+        first_data = json.loads([line for line in events[0].split("\n") if line.startswith("data: ")][0][6:])
+        assert first_data["id"] >= 55
+
+    def test_stream_since_future_timestamp_does_not_stream_history(self, client):
+        """Stream with future since timestamp should default to MAX(id) and not replay history."""
+        future_ts = "2099-01-01T00:00:00+00:00"
+        response = client.get(
+            f"/api/stream?station_id=STATION-001&since={quote(future_ts)}&max_events=1&poll_interval=0.01"
+        )
+        assert response.status_code == 200
+        text = response.data.decode("utf-8")
+        # Should have returned no data events (only empty or keepalive)
+        events = [chunk for chunk in text.split("\n\n") if chunk.strip() and not chunk.startswith(":")]
+        assert len(events) == 0
+
+    def test_stream_handles_empty_db(self, client, tmp_path: Path):
+        """Stream should handle empty database gracefully without raising exceptions."""
+        empty_db = tmp_path / "empty_stream.db"
+        conn = sqlite3.connect(str(empty_db))
+        conn.execute(
+            """
+            CREATE TABLE readings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                station_id TEXT,
+                timestamp TEXT,
+                temperature REAL,
+                humidity REAL,
+                windspeed REAL
+            )
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        web.DB_PATH = empty_db
+        response = client.get("/api/stream?max_events=1&poll_interval=0.01")
+        assert response.status_code == 200
+        assert "text/event-stream" in response.content_type
+
+
+class TestReadingsSinceCursor:
+    """Tests for api_readings since timestamp cursor."""
+
+    def test_readings_since_timestamp_cursor(self, client, test_db_path: Path):
+        """Readings with since parameter should return only records strictly newer than timestamp."""
+        conn = sqlite3.connect(str(test_db_path))
+        conn.row_factory = sqlite3.Row
+        sample = conn.execute(
+            "SELECT timestamp FROM readings WHERE station_id = 'STATION-001' ORDER BY timestamp ASC LIMIT 1 OFFSET 20"
+        ).fetchone()
+        conn.close()
+
+        cursor_ts = sample["timestamp"]
+        res = client.get(f"/api/readings?station_id=STATION-001&metric=temperature&since={quote(cursor_ts)}")
+        assert res.status_code == 200
+        points = res.get_json()["points"]
+        assert len(points) > 0
+        for p in points:
+            assert p["t"] > cursor_ts
 
