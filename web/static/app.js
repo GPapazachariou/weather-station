@@ -26,6 +26,15 @@ let isRefreshing = false; // In-flight request guard
 let pendingRefresh = false; // Coalesce rapid changes during active refresh
 let statsRefreshTimer = null; // Debounce/coalesce stats refresh on live updates (S5)
 
+// Race condition & delayed response prevention
+let currentFetchId = 0;
+let activeAbortController = null;
+
+// User preferences storage key and display mode ('chart' | 'table')
+const PREFS_STORAGE_KEY = 'weather_station_preferences';
+let currentDisplayFormat = 'chart';
+const STALE_THRESHOLD_SECONDS = 180; // 3 minutes without new telemetry
+
 const METRIC_CONFIGS = {
     temperature: {
         id: 'temperature',
@@ -62,20 +71,104 @@ const METRIC_CONFIGS = {
     }
 };
 
+/**
+ * Save user control selections to localStorage
+ */
+function savePreferences() {
+    try {
+        const station = document.getElementById('station-select')?.value || '';
+        const metric = document.getElementById('metric-select')?.value || 'all';
+        const range = document.getElementById('range-select')?.value || '24h';
+        const limit = document.getElementById('limit-select')?.value || '50';
+        const toggleRaw = document.getElementById('toggleRaw')?.checked ?? true;
+        const toggleRolling = document.getElementById('toggleRolling')?.checked ?? true;
+        const rollingWindow = document.getElementById('rollingWindow')?.value || '10';
+
+        const prefs = {
+            station,
+            metric,
+            range,
+            limit,
+            toggleRaw,
+            toggleRolling,
+            rollingWindow,
+            displayFormat: currentDisplayFormat
+        };
+        localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(prefs));
+    } catch (e) {
+        console.warn('[Prefs] Could not save preferences to localStorage:', e);
+    }
+}
+
+/**
+ * Load saved user control selections from localStorage
+ */
+function loadPreferences() {
+    try {
+        const raw = localStorage.getItem(PREFS_STORAGE_KEY);
+        if (!raw) return null;
+        return JSON.parse(raw);
+    } catch (e) {
+        console.warn('[Prefs] Could not load preferences from localStorage:', e);
+        return null;
+    }
+}
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('[Init] Loading dashboard...');
 
     startLastUpdatedTimer();
 
-    // Load stations first
+    // Restore saved preferences before initial queries
+    const savedPrefs = loadPreferences();
+    if (savedPrefs) {
+        if (savedPrefs.metric) {
+            const metricEl = document.getElementById('metric-select');
+            if (metricEl) metricEl.value = savedPrefs.metric;
+        }
+        if (savedPrefs.range) {
+            const rangeEl = document.getElementById('range-select');
+            if (rangeEl) {
+                rangeEl.value = savedPrefs.range;
+                if (savedPrefs.range === 'limit') {
+                    const limitSelect = document.getElementById('limit-select');
+                    const limitField = document.getElementById('limit-field');
+                    if (limitSelect) limitSelect.style.display = 'block';
+                    if (limitField) limitField.style.display = 'block';
+                }
+            }
+        }
+        if (savedPrefs.limit) {
+            const limitEl = document.getElementById('limit-select');
+            if (limitEl) limitEl.value = savedPrefs.limit;
+        }
+        if (typeof savedPrefs.toggleRaw === 'boolean') {
+            const rawEl = document.getElementById('toggleRaw');
+            if (rawEl) rawEl.checked = savedPrefs.toggleRaw;
+        }
+        if (typeof savedPrefs.toggleRolling === 'boolean') {
+            const rollingEl = document.getElementById('toggleRolling');
+            if (rollingEl) rollingEl.checked = savedPrefs.toggleRolling;
+        }
+        if (savedPrefs.rollingWindow) {
+            const windowEl = document.getElementById('rollingWindow');
+            if (windowEl) windowEl.value = savedPrefs.rollingWindow;
+        }
+        if (savedPrefs.displayFormat === 'table' || savedPrefs.displayFormat === 'chart') {
+            currentDisplayFormat = savedPrefs.displayFormat;
+            updateDisplayFormatUI(currentDisplayFormat);
+        }
+    }
+
+    // Load stations first (respecting saved station preference)
     await loadStations();
 
     // Setup event listeners
     document.getElementById('station-select').addEventListener('change', onStationChange);
     document.getElementById('metric-select').addEventListener('change', onMetricChange);
     document.getElementById('range-select').addEventListener('change', onRangeChange);
-    document.getElementById('limit-select').addEventListener('change', refreshAll);
+    document.getElementById('limit-select').addEventListener('change', () => { savePreferences(); refreshAll(); });
     document.getElementById('toggleRaw').addEventListener('change', onToggleChange);
     document.getElementById('toggleRolling').addEventListener('change', onToggleChange);
     document.getElementById('rollingWindow').addEventListener('change', onToggleChange);
@@ -99,6 +192,7 @@ document.addEventListener('DOMContentLoaded', async () => {
  * Handle station dropdown change: restart SSE stream and reload data
  */
 async function onStationChange() {
+    savePreferences();
     lastReceivedId = null;
     closeLiveStream();
     await refreshAll();
@@ -109,6 +203,7 @@ async function onStationChange() {
  * Handle metric change: re-fetch data for new metric
  */
 async function onMetricChange() {
+    savePreferences();
     await refreshAll();
 }
 
@@ -116,13 +211,16 @@ async function onMetricChange() {
  * Handle toggle or rolling window changes without full network fetch if data exists
  */
 function onToggleChange() {
+    savePreferences();
     const metricMode = document.getElementById('metric-select').value;
     const range = document.getElementById('range-select').value;
     const rawEnabled = document.getElementById('toggleRaw').checked;
     const rollingEnabled = document.getElementById('toggleRolling').checked;
     const windowSize = parseInt(document.getElementById('rollingWindow').value, 10) || 10;
 
-    if (metricMode === 'all') {
+    if (currentDisplayFormat === 'table') {
+        renderAccessibleTable();
+    } else if (metricMode === 'all') {
         renderAlignedPanels(multiSeries, rawEnabled, rollingEnabled, windowSize, range);
     } else {
         renderSingleChart(metricMode, currentRawPoints, rawEnabled, rollingEnabled, windowSize, range);
@@ -130,24 +228,39 @@ function onToggleChange() {
 }
 
 /**
- * Set visual connection status badge
+ * Set visual connection status badge and reconnect button
  */
 function setLiveStatus(status) {
     const badge = document.getElementById('live-indicator');
     const text = document.getElementById('live-status-text');
+    const btnReconnect = document.getElementById('btn-reconnect');
     if (!badge || !text) return;
 
     badge.className = `live-badge ${status}`;
     if (status === 'connected') {
         text.textContent = 'Live';
+        if (btnReconnect) btnReconnect.style.display = 'none';
     } else if (status === 'reconnecting') {
         text.textContent = 'Reconnecting...';
+        if (btnReconnect) btnReconnect.style.display = 'inline-flex';
     } else if (status === 'connecting') {
         text.textContent = 'Connecting...';
+        if (btnReconnect) btnReconnect.style.display = 'none';
     } else {
         text.textContent = 'Offline';
+        if (btnReconnect) btnReconnect.style.display = 'inline-flex';
     }
 }
+
+/**
+ * User-initiated manual reconnect recovery action
+ */
+window.manualReconnect = function() {
+    console.log('[SSE] Manual reconnect initiated by user');
+    reconnectDelay = INITIAL_RECONNECT_DELAY;
+    closeLiveStream();
+    initLiveStream();
+};
 
 /**
  * Start 1-second interval timer for "Last updated: X seconds ago"
@@ -158,15 +271,23 @@ function startLastUpdatedTimer() {
 }
 
 /**
- * Update the text showing when data was last updated
+ * Update the text showing when data was last updated and freshness state
  */
 function updateLastUpdatedDisplay() {
     const span = document.getElementById('last-updated');
+    const badge = document.getElementById('freshness-badge');
+    const text = document.getElementById('freshness-text');
     if (!span) return;
+
     if (!lastUpdatedTime) {
         span.textContent = 'Last updated: --';
+        if (badge && text) {
+            badge.className = 'freshness-badge stale';
+            text.textContent = 'Waiting';
+        }
         return;
     }
+
     const diffSec = Math.max(0, Math.floor((Date.now() - lastUpdatedTime.getTime()) / 1000));
     if (diffSec < 2) {
         span.textContent = 'Last updated: just now';
@@ -176,6 +297,19 @@ function updateLastUpdatedDisplay() {
         span.textContent = `Last updated: ${Math.floor(diffSec / 60)}m ago`;
     } else {
         span.textContent = `Last updated: ${Math.floor(diffSec / 3600)}h ago`;
+    }
+
+    if (badge && text) {
+        if (diffSec >= STALE_THRESHOLD_SECONDS) {
+            badge.className = 'freshness-badge stale';
+            const mins = Math.floor(diffSec / 60);
+            text.textContent = mins > 0 ? `Stale (${mins}m)` : `Stale (${diffSec}s)`;
+            badge.setAttribute('title', `Data is stale: no updates received for ${mins > 0 ? mins + 'm' : diffSec + 's'}`);
+        } else {
+            badge.className = 'freshness-badge fresh';
+            text.textContent = 'Fresh';
+            badge.setAttribute('title', 'Telemetry data is fresh and receiving live updates');
+        }
     }
 }
 
@@ -371,7 +505,9 @@ async function loadStations() {
         const stations = data.stations || [];
 
         const select = document.getElementById('station-select');
-        const previousSelection = select ? select.value : '';
+        const savedPrefs = loadPreferences();
+        const preferredStation = (savedPrefs && savedPrefs.station) ? savedPrefs.station : '';
+        const currentVal = select ? select.value : '';
 
         if (stations.length === 0) {
             console.warn('[Stations] No stations found');
@@ -381,16 +517,21 @@ async function loadStations() {
         }
 
         select.replaceChildren(...stations.map(s => new Option(s, s)));
-        
-        // Preserve current selection if still valid; otherwise select the first station
-        if (previousSelection && stations.includes(previousSelection)) {
-            select.value = previousSelection;
+
+        // Priority 1: Current selection if valid
+        // Priority 2: Saved user preference from localStorage
+        // Priority 3: First available station
+        if (currentVal && stations.includes(currentVal)) {
+            select.value = currentVal;
+        } else if (preferredStation && stations.includes(preferredStation)) {
+            select.value = preferredStation;
         } else {
             select.value = stations[0];
-            if (previousSelection && select.value !== previousSelection) {
+            if (currentVal && select.value !== currentVal) {
                 lastReceivedId = null;
             }
         }
+        savePreferences();
         console.log(`[Stations] Loaded ${stations.length} stations, selected: ${select.value}`);
 
     } catch (error) {
@@ -424,6 +565,7 @@ function hideErrorBanner() {
  * Handle range selector change - show/hide limit selector
  */
 function onRangeChange() {
+    savePreferences();
     const rangeSelect = document.getElementById('range-select').value;
     const limitSelect = document.getElementById('limit-select');
     const limitField = document.getElementById('limit-field');
@@ -440,15 +582,72 @@ function onRangeChange() {
 }
 
 /**
- * Refresh stats and chart when selection changes (with in-flight request guard and coalescing)
+ * Set aria-busy state on dashboard content sections
+ */
+function setAriaBusy(isBusy) {
+    const multiPanels = document.getElementById('multi-panels-container');
+    const singleChart = document.getElementById('chart-container');
+    const tableContainer = document.getElementById('table-container');
+    const val = isBusy ? 'true' : 'false';
+    if (multiPanels) multiPanels.setAttribute('aria-busy', val);
+    if (singleChart) singleChart.setAttribute('aria-busy', val);
+    if (tableContainer) tableContainer.setAttribute('aria-busy', val);
+}
+
+/**
+ * Update container visibility according to current metric and display format
+ */
+function updateContainerVisibility(metric, format) {
+    const multiStats = document.getElementById('multi-stats-container');
+    const singleStats = document.getElementById('stats-container');
+    const multiPanels = document.getElementById('multi-panels-container');
+    const singleChart = document.getElementById('chart-container');
+    const tableContainer = document.getElementById('table-container');
+
+    // Stats cards visibility
+    if (metric === 'all') {
+        if (multiStats) multiStats.style.display = 'grid';
+        if (singleStats) singleStats.style.display = 'none';
+    } else {
+        if (multiStats) multiStats.style.display = 'none';
+        if (singleStats) singleStats.style.display = 'grid';
+    }
+
+    // Format visibility
+    if (format === 'table') {
+        if (multiPanels) multiPanels.style.display = 'none';
+        if (singleChart) singleChart.style.display = 'none';
+        if (tableContainer) tableContainer.style.display = 'block';
+    } else {
+        if (tableContainer) tableContainer.style.display = 'none';
+        if (metric === 'all') {
+            if (multiPanels) multiPanels.style.display = 'flex';
+            if (singleChart) singleChart.style.display = 'none';
+        } else {
+            if (multiPanels) multiPanels.style.display = 'none';
+            if (singleChart) singleChart.style.display = 'block';
+        }
+    }
+}
+
+/**
+ * Refresh stats and chart when selection changes (with in-flight request abort and race-condition guard)
  */
 async function refreshAll() {
-    if (isRefreshing) {
-        pendingRefresh = true;
-        console.log('[Refresh] Request already in flight, marked pending refresh');
-        return;
+    // Abort any prior in-flight fetch to prevent delayed responses from older selections
+    if (activeAbortController) {
+        activeAbortController.abort();
     }
+    activeAbortController = new AbortController();
+    const abortSignal = activeAbortController.signal;
+    const fetchId = ++currentFetchId;
+
     isRefreshing = true;
+
+    // Show loading state
+    const loadingChip = document.getElementById('meta-loading');
+    if (loadingChip) loadingChip.style.display = 'inline-flex';
+    setAriaBusy(true);
 
     try {
         const station = document.getElementById('station-select').value;
@@ -479,49 +678,55 @@ async function refreshAll() {
 
         let queryParams = `?station_id=${encodeURIComponent(station)}&metric=${encodeURIComponent(metric)}`;
         if (range === 'limit') {
-            const limit = limitSelect.value;
+            const limit = limitSelect ? limitSelect.value : 50;
             if (!limit) {
                 showEmptyState();
                 return;
             }
             queryParams += `&limit=${encodeURIComponent(limit)}`;
-            console.log(`[Refresh] ${station} / ${metric} / last ${limit} values`);
+            console.log(`[Refresh #${fetchId}] ${station} / ${metric} / last ${limit} values`);
         } else {
             queryParams += `&range=${encodeURIComponent(range)}`;
-            console.log(`[Refresh] ${station} / ${metric} / ${range}`);
+            console.log(`[Refresh #${fetchId}] ${station} / ${metric} / ${range}`);
         }
 
         // Hide empty state and error banner on active refresh
         document.getElementById('empty-state').style.display = 'none';
         hideErrorBanner();
+        hideStationEmptyState();
 
-        // Toggle visibility of multi-stats vs single-stats containers
-        if (metric === 'all') {
-            document.getElementById('multi-stats-container').style.display = 'grid';
-            document.getElementById('stats-container').style.display = 'none';
-            document.getElementById('multi-panels-container').style.display = 'flex';
-            document.getElementById('chart-container').style.display = 'none';
-        } else {
-            document.getElementById('multi-stats-container').style.display = 'none';
-            document.getElementById('stats-container').style.display = 'grid';
-            document.getElementById('multi-panels-container').style.display = 'none';
-            document.getElementById('chart-container').style.display = 'block';
-        }
+        // Update layout visibility
+        updateContainerVisibility(metric, currentDisplayFormat);
 
-        // Fetch stats and readings in parallel
+        // Fetch stats and readings in parallel with abortSignal and fetchId
         await Promise.all([
-            fetchStats(queryParams),
-            fetchReadings(queryParams)
+            fetchStats(queryParams, abortSignal, fetchId, station, metric, range),
+            fetchReadings(queryParams, abortSignal, fetchId, station, metric, range)
         ]);
+
+        if (fetchId !== currentFetchId) {
+            console.log(`[Refresh #${fetchId}] Superceded by #${currentFetchId}, ignoring completion`);
+            return;
+        }
 
         lastUpdatedTime = new Date();
         updateLastUpdatedDisplay();
+    } catch (err) {
+        if (err.name === 'AbortError') {
+            console.log(`[Refresh #${fetchId}] Aborted by newer request`);
+            return;
+        }
+        console.error(`[Refresh #${fetchId}] Error:`, err);
     } finally {
-        isRefreshing = false;
-        if (pendingRefresh) {
-            pendingRefresh = false;
-            console.log('[Refresh] Running coalesced pending refresh');
-            refreshAll();
+        if (fetchId === currentFetchId) {
+            isRefreshing = false;
+            if (loadingChip) loadingChip.style.display = 'none';
+            setAriaBusy(false);
+            if (pendingRefresh) {
+                pendingRefresh = false;
+                console.log('[Refresh] Running coalesced pending refresh');
+                refreshAll();
+            }
         }
     }
 }
@@ -540,15 +745,27 @@ async function refreshAllWithStations() {
 /**
  * Fetch and display stats from full dataset
  */
-async function fetchStats(queryParams) {
+async function fetchStats(queryParams, signal, fetchId, station, metric, range) {
     try {
         const url = `/api/stats${queryParams}`;
-        const response = await fetch(url);
+        const response = await fetch(url, { signal });
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }
         const data = await response.json();
-        const metric = new URLSearchParams(queryParams).get('metric');
+
+        // Verify that this response is still for the current active request
+        if (fetchId && fetchId !== currentFetchId) {
+            console.log(`[fetchStats #${fetchId}] Dropping stale response (current is #${currentFetchId})`);
+            return;
+        }
+        const activeStation = document.getElementById('station-select')?.value;
+        const activeMetric = document.getElementById('metric-select')?.value;
+        const activeRange = document.getElementById('range-select')?.value;
+        if (station !== activeStation || metric !== activeMetric || range !== activeRange) {
+            console.log(`[fetchStats #${fetchId}] Selection changed while in-flight, dropping delayed response`);
+            return;
+        }
 
         if (metric === 'all') {
             updateMultiMetricStats(data);
@@ -556,6 +773,7 @@ async function fetchStats(queryParams) {
             updateSingleMetricStats(data, metric);
         }
     } catch (error) {
+        if (error.name === 'AbortError') return;
         console.error('[Error] Failed to fetch stats:', error);
         showErrorBanner('Failed to fetch statistics. Please check server or database.');
     }
@@ -635,21 +853,71 @@ function updateSingleMetricStats(data, metric) {
 }
 
 /**
+ * Show station-specific empty state when no telemetry exists in the selected window
+ */
+function showStationEmptyState(station, range) {
+    const el = document.getElementById('station-empty-state');
+    const textEl = document.getElementById('station-empty-text');
+    if (el) {
+        if (textEl) {
+            const rangeElem = document.getElementById('range-select');
+            const rangeText = (rangeElem && rangeElem.selectedIndex >= 0)
+                ? rangeElem.options[rangeElem.selectedIndex].textContent
+                : range;
+            textEl.textContent = `No telemetry readings recorded for Station "${station}" in window "${rangeText}".`;
+        }
+        el.style.display = 'block';
+    }
+    document.getElementById('multi-panels-container').style.display = 'none';
+    document.getElementById('chart-container').style.display = 'none';
+    const tableCont = document.getElementById('table-container');
+    if (tableCont) tableCont.style.display = 'none';
+}
+
+/**
+ * Hide station-specific empty state
+ */
+function hideStationEmptyState() {
+    const el = document.getElementById('station-empty-state');
+    if (el) el.style.display = 'none';
+}
+
+/**
+ * Recovery action to change range and refresh
+ */
+window.setRangeAndRefresh = function(rangeVal) {
+    const rangeSelect = document.getElementById('range-select');
+    if (rangeSelect) {
+        rangeSelect.value = rangeVal;
+        onRangeChange();
+    }
+};
+
+/**
  * Fetch and display readings for all panels or single panel
  */
-async function fetchReadings(queryParams) {
+async function fetchReadings(queryParams, signal, fetchId, station, metric, range) {
     try {
         const urlParams = new URLSearchParams(queryParams);
-        const metric = urlParams.get('metric');
-        const range = urlParams.get('range') || '24h';
-
-        // Supply full raw sequence without server-side downsampling (S3)
         const url = `/api/readings${queryParams}`;
-        const response = await fetch(url);
+        const response = await fetch(url, { signal });
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }
         const data = await response.json();
+
+        // Verify that this response is still for the current active request
+        if (fetchId && fetchId !== currentFetchId) {
+            console.log(`[fetchReadings #${fetchId}] Dropping stale response (current is #${currentFetchId})`);
+            return;
+        }
+        const activeStation = document.getElementById('station-select')?.value;
+        const activeMetric = document.getElementById('metric-select')?.value;
+        const activeRange = document.getElementById('range-select')?.value;
+        if (station !== activeStation || metric !== activeMetric || range !== activeRange) {
+            console.log(`[fetchReadings #${fetchId}] Selection changed while in-flight, dropping delayed response`);
+            return;
+        }
 
         const rawEnabled = document.getElementById('toggleRaw').checked;
         const rollingEnabled = document.getElementById('toggleRolling').checked;
@@ -665,10 +933,19 @@ async function fetchReadings(queryParams) {
 
             updateMetaChips(totalPoints, totalPoints > 350);
 
-            if (typeof Chart !== 'undefined') {
-                renderAlignedPanels(multiSeries, rawEnabled, rollingEnabled, windowSize, range);
+            const hasPoints = (multiSeries.temperature.length > 0 || multiSeries.humidity.length > 0 || multiSeries.windspeed.length > 0);
+            if (!hasPoints) {
+                showStationEmptyState(station, range);
             } else {
-                renderTable(multiSeries.temperature || []);
+                hideStationEmptyState();
+                updateContainerVisibility('all', currentDisplayFormat);
+                if (currentDisplayFormat === 'table') {
+                    renderAccessibleTable();
+                } else if (typeof Chart !== 'undefined') {
+                    renderAlignedPanels(multiSeries, rawEnabled, rollingEnabled, windowSize, range);
+                } else {
+                    renderAccessibleTable();
+                }
             }
         } else {
             const points = data.points || [];
@@ -677,13 +954,22 @@ async function fetchReadings(queryParams) {
 
             updateMetaChips(totalPoints, totalPoints > 350);
 
-            if (typeof Chart !== 'undefined') {
-                renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSize, range);
+            if (points.length === 0) {
+                showStationEmptyState(station, range);
             } else {
-                renderTable(points);
+                hideStationEmptyState();
+                updateContainerVisibility(metric, currentDisplayFormat);
+                if (currentDisplayFormat === 'table') {
+                    renderAccessibleTable();
+                } else if (typeof Chart !== 'undefined') {
+                    renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSize, range);
+                } else {
+                    renderAccessibleTable();
+                }
             }
         }
     } catch (error) {
+        if (error.name === 'AbortError') return;
         console.error('[Error] Failed to fetch readings:', error);
         showErrorBanner('Failed to fetch telemetry readings. Please check server or database.');
     }
@@ -1398,26 +1684,191 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
 }
 
 /**
- * Render fallback table
+ * Set display format ('chart' or 'table') and update view
  */
-function renderTable(points) {
-    const tbody = document.getElementById('table-body');
-    if (!tbody) return;
-    tbody.innerHTML = points
-        .map(p => `
-            <tr>
-                <td>${formatFullTimestamp(p.t)}</td>
-                <td>${p.v !== null && p.v !== undefined ? p.v.toFixed(2) : 'N/A'}</td>
-            </tr>
-        `)
-        .join('');
+window.setDisplayFormat = function(format) {
+    currentDisplayFormat = format;
+    savePreferences();
+    updateDisplayFormatUI(format);
+
+    const metric = document.getElementById('metric-select').value;
+    updateContainerVisibility(metric, format);
+
+    if (format === 'table') {
+        renderAccessibleTable();
+    } else {
+        const rawEnabled = document.getElementById('toggleRaw').checked;
+        const rollingEnabled = document.getElementById('toggleRolling').checked;
+        const windowSize = parseInt(document.getElementById('rollingWindow').value, 10) || 10;
+        const range = document.getElementById('range-select').value;
+        if (metric === 'all') {
+            renderAlignedPanels(multiSeries, rawEnabled, rollingEnabled, windowSize, range);
+        } else {
+            renderSingleChart(metric, currentRawPoints, rawEnabled, rollingEnabled, windowSize, range);
+        }
+    }
+};
+
+/**
+ * Update UI buttons for display mode
+ */
+function updateDisplayFormatUI(format) {
+    const btnCharts = document.getElementById('btn-view-charts');
+    const btnTable = document.getElementById('btn-view-table');
+    if (btnCharts && btnTable) {
+        btnCharts.classList.toggle('active', format === 'chart');
+        btnCharts.setAttribute('aria-pressed', format === 'chart');
+        btnTable.classList.toggle('active', format === 'table');
+        btnTable.setAttribute('aria-pressed', format === 'table');
+    }
 }
 
 /**
- * Show empty state message
+ * Render accessible data table with semantics, units, and clear structure
+ */
+function renderAccessibleTable() {
+    const metricMode = document.getElementById('metric-select')?.value || 'all';
+    const theadRow = document.getElementById('table-head-row');
+    const tbody = document.getElementById('table-body');
+    const summaryChip = document.getElementById('table-caption-summary');
+    const captionEl = document.getElementById('table-accessible-caption');
+    if (!tbody || !theadRow) return;
+
+    if (metricMode === 'all') {
+        theadRow.innerHTML = `
+            <th scope="col">Timestamp (UTC)</th>
+            <th scope="col">Temperature (°C)</th>
+            <th scope="col">Humidity (%)</th>
+            <th scope="col">Wind Speed (m/s)</th>
+        `;
+
+        // Align rows by timestamp
+        const timeMap = new Map();
+        (multiSeries.temperature || []).forEach(p => {
+            if (!timeMap.has(p.t)) timeMap.set(p.t, {});
+            timeMap.get(p.t).temp = p.v;
+        });
+        (multiSeries.humidity || []).forEach(p => {
+            if (!timeMap.has(p.t)) timeMap.set(p.t, {});
+            timeMap.get(p.t).hum = p.v;
+        });
+        (multiSeries.windspeed || []).forEach(p => {
+            if (!timeMap.has(p.t)) timeMap.set(p.t, {});
+            timeMap.get(p.t).wind = p.v;
+        });
+
+        const sortedTimestamps = Array.from(timeMap.keys()).sort();
+        if (summaryChip) summaryChip.textContent = `${sortedTimestamps.length} records`;
+        if (captionEl) captionEl.textContent = `Weather telemetry records for all metrics: ${sortedTimestamps.length} entries`;
+
+        if (sortedTimestamps.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; padding: 24px; color: var(--text-muted);">No records to display</td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = sortedTimestamps.map(t => {
+            const row = timeMap.get(t);
+            const tempStr = (row.temp !== undefined && row.temp !== null) ? row.temp.toFixed(2) : '--';
+            const humStr = (row.hum !== undefined && row.hum !== null) ? row.hum.toFixed(2) : '--';
+            const windStr = (row.wind !== undefined && row.wind !== null) ? row.wind.toFixed(2) : '--';
+            return `<tr>
+                <th scope="row">${formatFullTimestamp(t)}</th>
+                <td>${tempStr}</td>
+                <td>${humStr}</td>
+                <td>${windStr}</td>
+            </tr>`;
+        }).join('');
+    } else {
+        const config = METRIC_CONFIGS[metricMode] || { title: metricMode, unit: '' };
+        theadRow.innerHTML = `
+            <th scope="col">Timestamp (UTC)</th>
+            <th scope="col">${config.title} (${config.unit})</th>
+        `;
+
+        const points = currentRawPoints || [];
+        if (summaryChip) summaryChip.textContent = `${points.length} records`;
+        if (captionEl) captionEl.textContent = `Weather telemetry records for ${config.title}: ${points.length} entries`;
+
+        if (points.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="2" style="text-align:center; padding: 24px; color: var(--text-muted);">No records to display</td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = points.map(p => {
+            const valStr = (p.v !== undefined && p.v !== null) ? p.v.toFixed(2) : 'N/A';
+            return `<tr>
+                <th scope="row">${formatFullTimestamp(p.t)}</th>
+                <td>${valStr}</td>
+            </tr>`;
+        }).join('');
+    }
+}
+
+/**
+ * Legacy renderTable wrapper for backward compatibility
+ */
+function renderTable(points) {
+    if (points && points.length > 0 && (!currentRawPoints || currentRawPoints.length === 0)) {
+        currentRawPoints = points;
+    }
+    renderAccessibleTable();
+}
+
+/**
+ * Copy data table as CSV to clipboard
+ */
+window.copyTableAsCsv = function() {
+    const metricMode = document.getElementById('metric-select')?.value || 'all';
+    let csv = '';
+
+    if (metricMode === 'all') {
+        csv = 'Timestamp,Temperature_C,Humidity_pct,WindSpeed_ms\n';
+        const timeMap = new Map();
+        (multiSeries.temperature || []).forEach(p => {
+            if (!timeMap.has(p.t)) timeMap.set(p.t, {});
+            timeMap.get(p.t).temp = p.v;
+        });
+        (multiSeries.humidity || []).forEach(p => {
+            if (!timeMap.has(p.t)) timeMap.set(p.t, {});
+            timeMap.get(p.t).hum = p.v;
+        });
+        (multiSeries.windspeed || []).forEach(p => {
+            if (!timeMap.has(p.t)) timeMap.set(p.t, {});
+            timeMap.get(p.t).wind = p.v;
+        });
+        const sortedTimestamps = Array.from(timeMap.keys()).sort();
+        for (const t of sortedTimestamps) {
+            const r = timeMap.get(t);
+            csv += `"${t}",${r.temp ?? ''},${r.hum ?? ''},${r.wind ?? ''}\n`;
+        }
+    } else {
+        const config = METRIC_CONFIGS[metricMode] || { title: metricMode, unit: '' };
+        csv = `Timestamp,${config.title}_${config.unit}\n`;
+        for (const p of (currentRawPoints || [])) {
+            csv += `"${p.t}",${p.v ?? ''}\n`;
+        }
+    }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(csv).then(() => {
+            const btn = document.getElementById('btn-copy-csv');
+            if (btn) {
+                const orig = btn.innerHTML;
+                btn.innerHTML = `<span aria-hidden="true">✓</span> Copied!`;
+                setTimeout(() => { btn.innerHTML = orig; }, 2000);
+            }
+        }).catch(err => {
+            console.error('Failed to copy CSV:', err);
+        });
+    }
+};
+
+/**
+ * Show global empty state message
  */
 function showEmptyState() {
     document.getElementById('empty-state').style.display = 'block';
+    hideStationEmptyState();
     document.getElementById('stats-container').style.display = 'none';
     document.getElementById('multi-stats-container').style.display = 'none';
     document.getElementById('multi-panels-container').style.display = 'none';

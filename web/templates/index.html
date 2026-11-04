@@ -8,9 +8,10 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
+    <a href="#main-content" class="skip-link">Skip to main content</a>
     <div class="dashboard-shell container">
         <!-- Top Navigation & Header -->
-        <header class="dashboard-header">
+        <header class="dashboard-header" role="banner">
             <div class="header-brand">
                 <div class="brand-icon" aria-hidden="true">⛅</div>
                 <div class="brand-text">
@@ -18,15 +19,26 @@
                     <p class="subtitle">Real-time environmental telemetry</p>
                 </div>
             </div>
-            <div class="live-status-container">
-                <span id="live-indicator" class="live-badge connected" title="Stream connection status">
+            <div class="live-status-container" role="region" aria-label="Connection and telemetry status">
+                <span id="live-indicator" class="live-badge connected" title="Stream connection status" role="status" aria-live="polite">
                     <span class="live-dot" aria-hidden="true"></span>
                     <span id="live-status-text">Live</span>
                 </span>
-                <span id="last-updated" class="last-updated-text">Last updated: just now</span>
+                <button type="button" id="btn-reconnect" class="btn-reconnect" style="display: none;" aria-label="Reconnect live stream" onclick="manualReconnect()">
+                    <span aria-hidden="true">⟳</span> Reconnect Now
+                </button>
+                <span id="freshness-badge" class="freshness-badge fresh" role="status" aria-live="polite" title="Telemetry freshness indicator">
+                    <span class="freshness-icon" aria-hidden="true">⏱️</span>
+                    <span id="freshness-text">Fresh</span>
+                </span>
+                <span id="last-updated" class="last-updated-text" role="status" aria-live="polite">Last updated: just now</span>
+                <button type="button" id="btn-refresh-now" class="btn-refresh-action" aria-label="Refresh telemetry data" onclick="refreshAll()" title="Refresh telemetry data">
+                    <span aria-hidden="true">↻</span> Refresh
+                </button>
             </div>
         </header>
 
+        <main id="main-content" class="dashboard-main" tabindex="-1">
         <!-- Current Context Hero Bar: Immediate visibility into station, period, freshness, and current conditions -->
         <section class="context-hero-bar" id="context-hero-bar" aria-label="Current dashboard overview">
             <div class="context-group">
@@ -121,6 +133,19 @@
                         </select>
                     </div>
                 </div>
+                <div class="control-field view-format-field">
+                    <span class="field-label" id="view-format-label">Display Mode</span>
+                    <div class="segmented-control" role="group" aria-labelledby="view-format-label">
+                        <button type="button" id="btn-view-charts" class="segment-btn active" aria-pressed="true" onclick="setDisplayFormat('chart')">
+                            <span class="segment-icon" aria-hidden="true">📈</span>
+                            <span>Charts</span>
+                        </button>
+                        <button type="button" id="btn-view-table" class="segment-btn" aria-pressed="false" onclick="setDisplayFormat('table')">
+                            <span class="segment-icon" aria-hidden="true">📋</span>
+                            <span>Table</span>
+                        </button>
+                    </div>
+                </div>
             </div>
 
             <div class="controls-cluster secondary-controls">
@@ -157,6 +182,10 @@
                 <span class="chip-icon" aria-hidden="true">📊</span>
                 <span class="chip-text">Loading data...</span>
             </span>
+            <span id="meta-loading" class="meta-chip meta-chip-loading" style="display: none;" role="status" aria-live="polite">
+                <span class="spinner-inline" aria-hidden="true"></span>
+                <span class="chip-text">Updating...</span>
+            </span>
             <span id="meta-aggregation" class="meta-chip meta-chip-info" style="display: none;">
                 <span class="chip-icon" aria-hidden="true">⚡</span>
                 <span class="chip-text">Aggregated (Peaks/Troughs Preserved)</span>
@@ -167,13 +196,25 @@
             </span>
         </div>
 
-        <!-- Empty State -->
-        <div id="empty-state" class="empty-state" style="display: none;">
+        <!-- Global Empty State (no stations at all in database) -->
+        <div id="empty-state" class="empty-state" style="display: none;" role="region" aria-label="No stations available">
             <div class="empty-state-graphic" aria-hidden="true">📡</div>
             <h2 class="empty-state-title">No Weather Data Available</h2>
             <p class="empty-state-text">No stations or telemetry readings were found in the database.</p>
             <p class="empty-state-hint">Start a station client or seed demo readings to begin live monitoring.</p>
             <button type="button" class="btn-refresh-empty" onclick="refreshAllWithStations()">Check Again</button>
+        </div>
+
+        <!-- Station-Specific Empty State (station exists, but no data in chosen time range) -->
+        <div id="station-empty-state" class="empty-state station-empty" style="display: none;" role="region" aria-label="No data for selected time range">
+            <div class="empty-state-graphic" aria-hidden="true">📊</div>
+            <h2 class="empty-state-title" id="station-empty-title">No Telemetry In This Window</h2>
+            <p class="empty-state-text" id="station-empty-text">No readings found for the selected station in this time range.</p>
+            <div class="empty-actions">
+                <button type="button" class="btn-action-primary" onclick="setRangeAndRefresh('all')">View All History</button>
+                <button type="button" class="btn-action-secondary" onclick="setRangeAndRefresh('30d')">View Last 30 Days</button>
+                <button type="button" class="btn-action-outline" onclick="refreshAll()">Check Again</button>
+            </div>
         </div>
 
         <!-- Single Metric Stats Cards -->
@@ -351,21 +392,39 @@
             <canvas id="data-chart" style="display: none;"></canvas>
         </section>
 
-        <!-- Fallback Table -->
-        <section id="table-container" class="table-section" style="display: none;" aria-label="Raw readings data table">
+        <!-- Accessible Telemetry Table Alternative -->
+        <section id="table-container" class="table-section" style="display: none;" aria-label="Accessible telemetry data table">
             <div class="table-card">
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>Timestamp</th>
-                            <th>Value</th>
-                        </tr>
-                    </thead>
-                    <tbody id="table-body">
-                    </tbody>
-                </table>
+                <div class="table-toolbar">
+                    <div class="table-toolbar-info">
+                        <h2 class="table-title">Telemetry Data Records</h2>
+                        <span id="table-caption-summary" class="table-summary-chip">0 records</span>
+                    </div>
+                    <div class="table-toolbar-actions">
+                        <button type="button" id="btn-copy-csv" class="btn-table-action" onclick="copyTableAsCsv()" title="Copy tabular data as CSV" aria-label="Copy table data as CSV">
+                            <span aria-hidden="true">📋</span> Copy CSV
+                        </button>
+                    </div>
+                </div>
+                <div class="table-responsive-wrapper" tabindex="0" role="region" aria-label="Telemetry records data table, scrollable">
+                    <table class="data-table" id="telemetry-data-table">
+                        <caption id="table-accessible-caption" class="sr-only">Weather station telemetry records table</caption>
+                        <thead id="table-head">
+                            <tr id="table-head-row">
+                                <th scope="col">Timestamp (UTC)</th>
+                                <th scope="col">Value</th>
+                            </tr>
+                        </thead>
+                        <tbody id="table-body">
+                        </tbody>
+                    </table>
+                </div>
+                <div class="table-footer-status">
+                    <span id="table-footer-note" class="table-footer-text">Displaying telemetry readings in chronological order.</span>
+                </div>
             </div>
         </section>
+        </main>
     </div>
 
     <script src="{{ url_for('static', filename='app.js') }}"></script>
