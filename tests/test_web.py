@@ -221,6 +221,15 @@ class TestStatsApi:
             assert response.status_code == 200
             assert response.get_json()["latest"] is None
 
+    def test_stats_wind_speed_metric(self, client):
+        """Stats should accept 'wind_speed' as a valid metric and query normalized wind column."""
+        response = client.get("/api/stats?station_id=STATION-001&metric=wind_speed&limit=10")
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["latest"] is not None
+        assert data["avg"] is not None
+        assert data["min"] <= data["avg"] <= data["max"]
+
 
 # ============================================================================
 # 4. Readings API & Regression Tests (B2 & B3)
@@ -317,6 +326,14 @@ class TestReadingsApi:
             assert response.status_code == 200
             assert response.get_json() == {"points": []}
 
+    def test_readings_wind_speed_metric(self, client):
+        """Readings should accept 'wind_speed' as a valid metric and return points."""
+        response = client.get("/api/readings?station_id=STATION-001&metric=wind_speed&limit=10")
+        assert response.status_code == 200
+        data = response.get_json()
+        assert len(data["points"]) == 10
+        assert all("t" in p and "v" in p for p in data["points"])
+
 
 # ============================================================================
 # 5. Schema Detection & Utility Tests
@@ -331,6 +348,7 @@ class TestSchemaAndUtilities:
         web._wind_column_cache = None
         assert web.detect_wind_column() == "windspeed"
         assert web.normalize_metric("windspeed") == "windspeed"
+        assert web.normalize_metric("wind_speed") == "windspeed"
 
     def test_detect_wind_column_legacy_underscore(self, tmp_path: Path):
         """Table with 'wind_speed' column should be detected as 'wind_speed'."""
@@ -344,6 +362,7 @@ class TestSchemaAndUtilities:
         web._wind_column_cache = None
         assert web.detect_wind_column() == "wind_speed"
         assert web.normalize_metric("windspeed") == "wind_speed"
+        assert web.normalize_metric("wind_speed") == "wind_speed"
 
     def test_detect_wind_column_fallback_on_missing_column(self, tmp_path: Path):
         """Table without any wind column should fall back to 'windspeed'."""
