@@ -69,28 +69,24 @@ The Flask web application provides a REST API and HTML dashboard for visualizing
 - Neither column exists → defaults to "windspeed" (might fail on SELECT, but unlikely)
 - DB connection fails → logged as warning; uses "windspeed"
 
-### Block: Timestamp Parsing & Comparison
+### Block: Time-Range Filtering & Cutoff Comparison
 
-**Where:** `parse_timestamp(ts)`, time-range filtering in API endpoints
+**Where:** Time-range filtering in API endpoints (`/api/stats`, `/api/readings`)
 
 **What it does:**
-1. Convert ISO 8601 string (with Z or +00:00) to Python datetime
-2. Strip timezone info to avoid comparison issues (all treated as UTC)
-3. Fall back to Unix timestamp parsing if ISO fails
-4. Return naive datetime for range queries
+1. Compute UTC cutoff datetime from current UTC time (`datetime.now(timezone.utc) - VALID_RANGES[time_range]`)
+2. Format cutoff as UTC ISO 8601 string (`cutoff_dt.isoformat()`)
+3. Push time-window filtering directly into SQLite query (`WHERE station_id = ? AND timestamp >= ?`)
+4. Leverage SQLite composite index `idx_readings_station_ts` for efficient filtering and sorting without in-Python row loops
 
-**Inputs:** ISO 8601 or Unix timestamp string
+**Inputs:** Time range query parameter (`6h`, `24h`)
 
-**Outputs:** datetime object (naive, UTC)
+**Outputs:** ISO 8601 UTC cutoff string passed as SQLite query parameter
 
 **Why it matters:**
-- Server sends ISO 8601 strings; web parses for time-range logic
-- Naive datetime simplifies comparison (no tzinfo mismatches)
-- Fallback handles edge cases
-
-**Failure modes:**
-- Invalid timestamp format → ValueError → return None (handled by caller)
-- Mixed timezone formats → comparison still works (lexicographic string order)
+- Ingested timestamps are normalized UTC ISO-8601 strings; SQLite evaluates lexicographical comparisons accurately
+- Pushing filtering into SQLite eliminates row-by-row in-Python parsing overhead
+- Obsolete utility function `parse_timestamp()` was removed as dead code after pushdown refactoring
 
 ### Block: Stations Endpoint
 

@@ -8,7 +8,6 @@ Tests cover:
 - Regression test for B2 ("Last N Values" returns newest N records in chronological order)
 - Regression test for B3 (UTC cutoff time-windowing without host timezone skew)
 - Dynamic schema detection (detect_wind_column for 'windspeed' vs 'wind_speed')
-- parse_timestamp utility behavior
 """
 
 import sqlite3
@@ -325,7 +324,7 @@ class TestReadingsApi:
 
 
 class TestSchemaAndUtilities:
-    """Tests for detect_wind_column() and parse_timestamp()."""
+    """Tests for detect_wind_column() dynamic schema detection."""
 
     def test_detect_wind_column_standard(self, client, test_db_path: Path):
         """Default table with 'windspeed' column should be detected as 'windspeed'."""
@@ -363,34 +362,3 @@ class TestSchemaAndUtilities:
         with patch("web.get_db", side_effect=sqlite3.OperationalError("error")):
             web._wind_column_cache = None
             assert web.detect_wind_column() == "windspeed"
-
-    def test_parse_timestamp_valid_iso_z(self):
-        """ISO timestamp ending in Z should parse to timezone-aware UTC datetime."""
-        dt = web.parse_timestamp("2026-10-02T01:30:00Z")
-        assert dt is not None
-        assert dt.tzinfo == timezone.utc
-        assert dt.year == 2026 and dt.month == 10 and dt.day == 2
-
-    def test_parse_timestamp_naive_iso(self):
-        """ISO timestamp without timezone offset should be set to UTC."""
-        dt = web.parse_timestamp("2026-10-02T01:30:00")
-        assert dt is not None
-        assert dt.tzinfo == timezone.utc
-
-    def test_parse_timestamp_valid_offset(self):
-        """ISO timestamp with explicit offset should convert to timezone-aware UTC datetime."""
-        dt = web.parse_timestamp("2026-10-02T04:30:00+03:00")
-        assert dt is not None
-        assert dt.tzinfo == timezone.utc
-        assert dt.hour == 1 and dt.minute == 30
-
-    def test_parse_timestamp_epoch_float(self):
-        """Epoch timestamp as string should parse to UTC datetime."""
-        dt = web.parse_timestamp("1727832600")
-        assert dt is not None
-        assert dt.tzinfo == timezone.utc
-
-    @pytest.mark.parametrize("invalid_ts", [None, "", "not-a-timestamp", "2026/99/99"])
-    def test_parse_timestamp_invalid_returns_none(self, invalid_ts):
-        """Invalid timestamp inputs should return None."""
-        assert web.parse_timestamp(invalid_ts) is None

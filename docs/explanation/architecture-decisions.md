@@ -525,11 +525,11 @@ stats = {
 }
 ```
 
-**Timestamp parsing ([`web/web.py`](web/web.py), `parse_timestamp()`):**
+**Timestamp filtering ([`web/web.py`](web/web.py)):**
 
-- Converts ISO 8601 strings (with Z or timezone offset) to Python `datetime`.
-- Strips timezone info to avoid comparison issues (all stored as UTC strings).
-- Falls back to Unix timestamp parsing if ISO fails.
+- API endpoints push time-window filtering directly into SQLite queries (`WHERE timestamp >= ?`).
+- Compares normalized ISO 8601 UTC cutoff strings directly against stored UTC strings using index `idx_readings_station_ts`.
+- Obsolete in-Python `parse_timestamp()` helper was removed.
 
 **Column detection ([`web/web.py`](web/web.py), `detect_wind_column()`):**
 
@@ -877,7 +877,7 @@ networks:
 | `server/app.py` | TCP server main logic | `init_database()`, `db_writer_task()`, `enqueue_batch()`, `handle_consumer_request()`, `handle_client()`, `_safe_json_loads()` |
 | `server/protocol.py` | Protocol validation | `validate_batch()`, `validate_timestamp()`, `validate_finite_number()`, constants (`MAX_LINE_SIZE`, `MAX_BATCH_SIZE`, `TEMPERATURE_MIN/MAX`, etc.) |
 | `station_client/client.py` | Weather station client | `load_config()`, `generate_reading()`, `generate_batch()`, `send_batches()`, resilience loop with exponential backoff + buffer |
-| `web/web.py` | Flask web dashboard | `get_db()`, `parse_timestamp()`, `/api/stations`, `/api/stats`, `/api/readings` endpoints, time-range filtering |
+| `web/web.py` | Flask web dashboard | `get_db()`, `/api/stations`, `/api/stats`, `/api/readings` endpoints, time-range filtering |
 | `consumer_client/test_consumer.py` | Consumer test suite | `send_request()`, `test_producer_ingest()`, `test_consumer_*()` functions (stations, latest, recent, etc.) |
 | `docker-compose.yml` | Service orchestration | Server, 3 station clients, web UI, volume/network setup |
 | `docker-compose.stress.yml` | Stress test compose | Auto-generated; 1 server, 1 web, 100 station clients |
