@@ -205,14 +205,36 @@ class TestStatsApi:
         assert data["min"] == round(min(expected_temps), 2)
         assert data["max"] == round(max(expected_temps), 2)
 
-    def test_stats_time_range_aggregation(self, client):
-        """Stats with range=6h should aggregate only records within 6 hours."""
+    def test_stats_time_range_aggregation(self, client, test_db_path: Path):
+        """Stats with range=6h should aggregate only records within 6 hours via SQLite."""
         response = client.get("/api/stats?station_id=STATION-001&metric=temperature&range=6h")
         assert response.status_code == 200
         data = response.get_json()
         assert data["latest"] is not None
         assert data["avg"] is not None
         assert data["min"] <= data["avg"] <= data["max"]
+
+        # Ground truth check against database
+        conn = sqlite3.connect(str(test_db_path))
+        conn.row_factory = sqlite3.Row
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
+        rows = conn.execute(
+            """
+            SELECT temperature, timestamp FROM readings
+            WHERE station_id = 'STATION-001' AND timestamp >= ? AND temperature IS NOT NULL
+            ORDER BY timestamp DESC
+            """,
+            (cutoff,),
+        ).fetchall()
+        conn.close()
+
+        expected_temps = [r["temperature"] for r in rows]
+        assert len(expected_temps) > 0
+        assert data["latest"] == round(expected_temps[0], 2)
+        assert data["latest_t"] == rows[0]["timestamp"]
+        assert data["avg"] == round(sum(expected_temps) / len(expected_temps), 2)
+        assert data["min"] == round(min(expected_temps), 2)
+        assert data["max"] == round(max(expected_temps), 2)
 
     def test_stats_handles_db_error(self, client):
         """DB query failure during stats calculation should return null metrics gracefully."""
