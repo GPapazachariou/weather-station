@@ -891,28 +891,28 @@ function getCommonTimeBounds(seriesMap) {
 }
 
 /**
- * Prepare point objects for continuous linear-time axis with raw references (S1, S2, S3)
+ * Prepare point objects for continuous linear-time axis with raw references (S1, S2, S3, S4)
  */
 function prepareSeriesForContinuousAxis(rawSeries, rawEnabled, rollingEnabled, windowSize) {
     // 1. Calculate true rolling averages on the full raw sequence first (S3)
     const rollingSeries = rollingEnabled ? computeRollingValuesOnRawPoints(rawSeries, windowSize) : [];
 
-    // 2. Downsample for canvas display if raw sequence exceeds 350 points, preserving extrema (S3)
-    const displayRaw = rawSeries.length > 350 ? downsamplePeakTroughClient(rawSeries, 350) : rawSeries;
-    const displayRolling = rollingSeries.length > 350 ? downsampleRollingClient(rollingSeries, 350) : rollingSeries;
+    // 2. Insert missing gap markers on full raw sequence BEFORE downsampling (S4)
+    const { points: gappedRaw, gapCount: rawGaps } = insertMissingGaps(rawSeries);
+    const { points: gappedRolling, gapCount: rollingGaps } = insertMissingGaps(rollingSeries);
 
-    // 3. Insert missing gaps on display points (S4, S2)
-    const { points: processedRaw, gapCount: rawGaps } = insertMissingGaps(displayRaw);
-    const { points: processedRolling, gapCount: rollingGaps } = insertMissingGaps(displayRolling);
+    // 3. Downsample for canvas display preserving extrema and gap boundaries (S3, S4)
+    const displayRaw = gappedRaw.length > 350 ? downsamplePeakTroughClient(gappedRaw, 350) : gappedRaw;
+    const displayRolling = gappedRolling.length > 350 ? downsampleRollingClient(gappedRolling, 350) : gappedRolling;
 
     // 4. Map into { x: timestampMs, y: val, raw: pointRef }
-    const rawData = rawEnabled ? processedRaw.map(p => ({
+    const rawData = rawEnabled ? displayRaw.map(p => ({
         x: new Date(p.t).getTime(),
         y: p.v,
         raw: p
     })) : [];
 
-    const rollingData = rollingEnabled ? processedRolling.map(p => ({
+    const rollingData = rollingEnabled ? displayRolling.map(p => ({
         x: new Date(p.t).getTime(),
         y: p.v,
         raw: p
