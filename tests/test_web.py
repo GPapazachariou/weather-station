@@ -821,7 +821,7 @@ class TestGraphAndDownsamplingEnhancements:
         assert len(points) == 60
 
     def test_downsample_peak_trough_with_gaps_and_nulls(self):
-        """Downsampling should handle buckets with null/gap values gracefully."""
+        """Downsampling should handle buckets with null/gap values gracefully and preserve gap markers."""
         points = [
             {"t": "2026-01-01T00:00:00+00:00", "v": None},
             {"t": "2026-01-01T00:01:00+00:00", "v": None},
@@ -832,6 +832,7 @@ class TestGraphAndDownsamplingEnhancements:
         ]
         downsampled = web.downsample_peak_trough(points, max_points=4)
         assert len(downsampled) <= 4
+        assert any(p["v"] is None for p in downsampled)
 
     def test_api_readings_all_metrics_with_limit_and_since(self, client, test_db_path: Path):
         """metric=all should work with limit and since query parameters."""

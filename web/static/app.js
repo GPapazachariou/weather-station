@@ -6,12 +6,14 @@ const charts = {
     single: null
 };
 
+// Full raw telemetry arrays
 let currentRawPoints = [];
 let multiSeries = {
     temperature: [],
     humidity: [],
     windspeed: []
 };
+
 let eventSource = null;
 let reconnectTimer = null;
 let reconnectDelay = 1000;
@@ -22,6 +24,7 @@ let lastUpdatedTimer = null;
 let lastReceivedId = null;
 let isRefreshing = false; // In-flight request guard
 let pendingRefresh = false; // Coalesce rapid changes during active refresh
+let statsRefreshTimer = null; // Debounce/coalesce stats refresh on live updates (S5)
 
 const METRIC_CONFIGS = {
     temperature: {
@@ -113,7 +116,17 @@ async function onMetricChange() {
  * Handle toggle or rolling window changes without full network fetch if data exists
  */
 function onToggleChange() {
-    refreshAll();
+    const metricMode = document.getElementById('metric-select').value;
+    const range = document.getElementById('range-select').value;
+    const rawEnabled = document.getElementById('toggleRaw').checked;
+    const rollingEnabled = document.getElementById('toggleRolling').checked;
+    const windowSize = parseInt(document.getElementById('rollingWindow').value, 10) || 10;
+
+    if (metricMode === 'all') {
+        renderAlignedPanels(multiSeries, rawEnabled, rollingEnabled, windowSize, range);
+    } else {
+        renderSingleChart(metricMode, currentRawPoints, rawEnabled, rollingEnabled, windowSize, range);
+    }
 }
 
 /**
@@ -246,7 +259,32 @@ function scheduleReconnect() {
 }
 
 /**
- * Handle new live reading received from SSE stream
+ * Schedule a debounced/coalesced fetch of full-dataset statistics on live updates (S5)
+ */
+function scheduleCoalescedStatsRefresh() {
+    if (statsRefreshTimer) return;
+    statsRefreshTimer = setTimeout(async () => {
+        statsRefreshTimer = null;
+        try {
+            const station = document.getElementById('station-select').value;
+            const metric = document.getElementById('metric-select').value;
+            const range = document.getElementById('range-select').value;
+            let q = `?station_id=${encodeURIComponent(station)}&metric=${encodeURIComponent(metric)}`;
+            if (range === 'limit') {
+                const limit = document.getElementById('limit-select').value || 50;
+                q += `&limit=${encodeURIComponent(limit)}`;
+            } else {
+                q += `&range=${encodeURIComponent(range)}`;
+            }
+            await fetchStats(q);
+        } catch (e) {
+            console.warn('[StatsRefresh] Coalesced refresh error:', e);
+        }
+    }, 1000);
+}
+
+/**
+ * Handle new live reading received from SSE stream (S2, S3, S5)
  */
 function handleLiveReading(reading) {
     const station = document.getElementById('station-select').value;
@@ -274,7 +312,7 @@ function handleLiveReading(reading) {
             const numVal = typeof val === 'number' ? val : parseFloat(val);
             const valStr = numVal.toFixed(2);
 
-            // Update multi-stat cards & mini stats
+            // Update latest readings immediately
             if (m === 'temperature') {
                 document.getElementById('stat-temp-latest').textContent = `${valStr} °C`;
                 document.getElementById('mini-temp-latest').textContent = `${valStr} °C`;
@@ -290,13 +328,11 @@ function handleLiveReading(reading) {
             if (limit && multiSeries[m].length > limit) {
                 while (multiSeries[m].length > limit) multiSeries[m].shift();
             }
-
-            // Update chart dynamically
-            const c = charts[m];
-            if (c && c.data) {
-                updateChartDatasets(c, multiSeries[m], rawEnabled, rollingEnabled, windowSize, rangeSelect);
-            }
         }
+
+        // Recompute global bounds and update panels with gap/tooltip integrity (S1, S2, S3)
+        refreshAllPanelsData(multiSeries, rawEnabled, rollingEnabled, windowSize, rangeSelect);
+        scheduleCoalescedStatsRefresh(); // S5
     } else {
         // Single metric mode
         let val = reading[metricMode];
@@ -314,36 +350,9 @@ function handleLiveReading(reading) {
             while (currentRawPoints.length > limit) currentRawPoints.shift();
         }
 
-        const c = charts.single || chart;
-        if (c && c.data) {
-            updateChartDatasets(c, currentRawPoints, rawEnabled, rollingEnabled, windowSize, rangeSelect);
-        }
+        renderSingleChart(metricMode, currentRawPoints, rawEnabled, rollingEnabled, windowSize, rangeSelect);
+        scheduleCoalescedStatsRefresh(); // S5
     }
-}
-
-/**
- * Dynamically update Chart datasets without tearing down the instance
- */
-function updateChartDatasets(chartInstance, points, rawEnabled, rollingEnabled, windowSize, range) {
-    const formattedLabels = points.map(p => formatAxisTime(p.t, range));
-    chartInstance.data.labels = formattedLabels;
-
-    const rawDs = chartInstance.data.datasets.find(ds => ds.id === 'raw');
-    if (rawDs) {
-        rawDs.data = rawEnabled ? points.map(p => p.v) : [];
-    }
-
-    const rollingDs = chartInstance.data.datasets.find(ds => ds.id === 'rolling');
-    if (rollingDs) {
-        if (rollingEnabled) {
-            const rawVals = points.map(p => p.v);
-            rollingDs.data = computeRollingValues(rawVals, windowSize);
-        } else {
-            rollingDs.data = [];
-        }
-    }
-
-    chartInstance.update('none');
 }
 
 /**
@@ -545,7 +554,7 @@ async function fetchReadings(queryParams) {
         const metric = urlParams.get('metric');
         const range = urlParams.get('range') || '24h';
 
-        // Include downsampling param for fast long-history transmission
+        // Downsampling param for large historical datasets
         const downsampleParam = '&downsample=350';
         const url = `/api/readings${queryParams}${downsampleParam}`;
         const response = await fetch(url);
@@ -619,13 +628,14 @@ function updateMetaChips(totalCount, isAggregated, gapCount = 0) {
 }
 
 /**
- * Detect missing intervals in time series and insert null gap points with spanGaps: false
+ * Detect missing intervals in time series and insert null gap points with spanGaps: false (S4, S2)
  */
 function insertMissingGaps(points) {
     if (!points || points.length < 2) return { points: points || [], gapCount: 0 };
 
     const deltas = [];
     for (let i = 0; i < points.length - 1; i++) {
+        if (points[i].v === null || points[i + 1].v === null) continue;
         const t1 = new Date(points[i].t).getTime();
         const t2 = new Date(points[i + 1].t).getTime();
         const diff = t2 - t1;
@@ -635,20 +645,24 @@ function insertMissingGaps(points) {
 
     deltas.sort((a, b) => a - b);
     const medianDelta = deltas[Math.floor(deltas.length / 2)];
-    // Threshold: 3x median interval and at least 15 minutes
     const threshold = Math.max(medianDelta * 3, 15 * 60 * 1000);
 
     const result = [];
     let gapCount = 0;
     for (let i = 0; i < points.length; i++) {
         result.push(points[i]);
+        if (points[i].v === null) {
+            gapCount++;
+        }
         if (i < points.length - 1) {
-            const t1 = new Date(points[i].t).getTime();
-            const t2 = new Date(points[i + 1].t).getTime();
-            if ((t2 - t1) > threshold) {
-                gapCount++;
-                const midIso = new Date(t1 + Math.floor((t2 - t1) / 2)).toISOString();
-                result.push({ t: midIso, v: null, isGap: true });
+            if (points[i].v !== null && points[i + 1].v !== null) {
+                const t1 = new Date(points[i].t).getTime();
+                const t2 = new Date(points[i + 1].t).getTime();
+                if ((t2 - t1) > threshold) {
+                    gapCount++;
+                    const midIso = new Date(t1 + Math.floor((t2 - t1) / 2)).toISOString();
+                    result.push({ t: midIso, v: null, isGap: true });
+                }
             }
         }
     }
@@ -656,21 +670,148 @@ function insertMissingGaps(points) {
 }
 
 /**
+ * Pre-compute rolling average over FULL raw reading sequence BEFORE downsampling (S3)
+ */
+function computeRollingValuesOnRawPoints(points, windowSize) {
+    if (!points || points.length === 0) return [];
+    if (windowSize <= 1) return points.map(p => ({ t: p.t, v: p.v }));
+
+    const result = [];
+    let sum = 0;
+    const window = [];
+
+    for (let i = 0; i < points.length; i++) {
+        const val = points[i].v;
+        if (val !== null && val !== undefined && !isNaN(val)) {
+            window.push(val);
+            sum += val;
+            if (window.length > windowSize) {
+                sum -= window.shift();
+            }
+            result.push({ t: points[i].t, v: sum / window.length });
+        } else {
+            window.length = 0; // Reset rolling buffer on gap/null
+            sum = 0;
+            result.push({ t: points[i].t, v: null });
+        }
+    }
+    return result;
+}
+
+/**
+ * Calculate common global continuous time bounds across all series (S1)
+ */
+function getCommonTimeBounds(seriesMap) {
+    let minTime = Infinity;
+    let maxTime = -Infinity;
+
+    for (const key of Object.keys(seriesMap)) {
+        const pts = seriesMap[key] || [];
+        for (const p of pts) {
+            if (!p.t) continue;
+            const ms = new Date(p.t).getTime();
+            if (ms < minTime) minTime = ms;
+            if (ms > maxTime) maxTime = ms;
+        }
+    }
+
+    if (minTime === Infinity || maxTime === -Infinity) {
+        const now = Date.now();
+        return { minTime: now - 3600000, maxTime: now };
+    }
+    if (minTime === maxTime) {
+        return { minTime: minTime - 60000, maxTime: maxTime + 60000 };
+    }
+    return { minTime, maxTime };
+}
+
+/**
+ * Prepare point objects for continuous linear-time axis with raw references (S1, S2, S3)
+ */
+function prepareSeriesForContinuousAxis(rawSeries, rawEnabled, rollingEnabled, windowSize) {
+    // 1. Calculate true rolling averages on the full raw sequence first (S3)
+    const rollingSeries = rollingEnabled ? computeRollingValuesOnRawPoints(rawSeries, windowSize) : [];
+
+    // 2. Insert missing gaps on raw points (S4, S2)
+    const { points: processedRaw, gapCount: rawGaps } = insertMissingGaps(rawSeries);
+    const { points: processedRolling, gapCount: rollingGaps } = insertMissingGaps(rollingSeries);
+
+    // 3. Map into { x: timestampMs, y: val, raw: pointRef }
+    const rawData = rawEnabled ? processedRaw.map(p => ({
+        x: new Date(p.t).getTime(),
+        y: p.v,
+        raw: p
+    })) : [];
+
+    const rollingData = rollingEnabled ? processedRolling.map(p => ({
+        x: new Date(p.t).getTime(),
+        y: p.v,
+        raw: p
+    })) : [];
+
+    return {
+        rawData,
+        rollingData,
+        gapCount: Math.max(rawGaps, rollingGaps)
+    };
+}
+
+/**
+ * Update all panel datasets and synchronize time bounds on live telemetry updates (S1, S2, S3)
+ */
+function refreshAllPanelsData(seriesMap, rawEnabled, rollingEnabled, windowSize, range) {
+    const { minTime, maxTime } = getCommonTimeBounds(seriesMap);
+    let totalGaps = 0;
+    const metrics = ['temperature', 'humidity', 'windspeed'];
+
+    for (const m of metrics) {
+        const c = charts[m];
+        if (!c) continue;
+
+        const { rawData, rollingData, gapCount } = prepareSeriesForContinuousAxis(
+            seriesMap[m] || [],
+            rawEnabled,
+            rollingEnabled,
+            windowSize
+        );
+        totalGaps = Math.max(totalGaps, gapCount);
+
+        // Update scales with common shared bounds (S1)
+        c.options.scales.x.min = minTime;
+        c.options.scales.x.max = maxTime;
+
+        const rawDs = c.data.datasets.find(ds => ds.id === 'raw');
+        if (rawDs) rawDs.data = rawData;
+
+        const rollingDs = c.data.datasets.find(ds => ds.id === 'rolling');
+        if (rollingDs) rollingDs.data = rollingData;
+
+        c.update('none');
+    }
+
+    if (totalGaps > 0) {
+        const total = (seriesMap.temperature || []).length;
+        updateMetaChips(total, false, totalGaps);
+    }
+}
+
+/**
  * Render three vertically aligned panels for Temperature, Humidity, and Wind Speed
+ * Using a shared continuous linear time axis (S1, S2, S3)
  */
 function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, range) {
     let totalGaps = 0;
     const metrics = ['temperature', 'humidity', 'windspeed'];
-
-    // Identify common time labels across all 3 metrics for alignment
-    const primarySeries = seriesMap.temperature.length ? seriesMap.temperature :
-                         (seriesMap.humidity.length ? seriesMap.humidity : seriesMap.windspeed);
-    const alignedTimestamps = primarySeries.map(p => p.t);
-    const alignedLabels = alignedTimestamps.map(t => formatAxisTime(t, range));
+    const { minTime, maxTime } = getCommonTimeBounds(seriesMap);
 
     for (const m of metrics) {
         const rawPoints = seriesMap[m] || [];
-        const { points: processedPoints, gapCount } = insertMissingGaps(rawPoints);
+        const { rawData, rollingData, gapCount } = prepareSeriesForContinuousAxis(
+            rawPoints,
+            rawEnabled,
+            rollingEnabled,
+            windowSize
+        );
         totalGaps = Math.max(totalGaps, gapCount);
 
         const config = METRIC_CONFIGS[m];
@@ -687,14 +828,14 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
             datasets.push({
                 id: 'raw',
                 label: `Raw ${config.title} (${config.unit})`,
-                data: processedPoints.map(p => p.v),
+                data: rawData,
                 borderColor: config.rawBorder,
                 backgroundColor: config.rawBg,
                 borderWidth: 2,
                 fill: true,
                 tension: 0.2,
-                spanGaps: false, // Ensures missing data renders as visible gaps
-                pointRadius: processedPoints.length > 150 ? 1 : 3,
+                spanGaps: false, // Ensures missing data renders as explicit line breaks (S4)
+                pointRadius: rawData.length > 150 ? 1 : 3,
                 pointHoverRadius: 5,
                 pointBackgroundColor: config.color,
                 pointBorderColor: '#ffffff',
@@ -702,13 +843,11 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
             });
         }
 
-        if (rollingEnabled && processedPoints.length > 0) {
-            const rawVals = processedPoints.map(p => p.v);
-            const rollingVals = computeRollingValues(rawVals, windowSize);
+        if (rollingEnabled && rollingData.length > 0) {
             datasets.push({
                 id: 'rolling',
                 label: `Rolling Avg (${windowSize})`,
-                data: rollingVals,
+                data: rollingData,
                 borderColor: config.rollingBorder,
                 backgroundColor: 'transparent',
                 borderWidth: 2.5,
@@ -721,13 +860,9 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
             });
         }
 
-        // Maintain references for custom tooltip details
-        const pointsReference = processedPoints;
-
         charts[m] = new Chart(ctx, {
             type: 'line',
             data: {
-                labels: alignedLabels,
                 datasets: datasets
             },
             options: {
@@ -735,7 +870,8 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
                 maintainAspectRatio: false,
                 animation: false,
                 interaction: {
-                    mode: 'index',
+                    mode: 'nearest',
+                    axis: 'x',
                     intersect: false,
                 },
                 plugins: {
@@ -760,18 +896,20 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
                         callbacks: {
                             title: (tooltipItems) => {
                                 if (!tooltipItems.length) return '';
-                                const idx = tooltipItems[0].dataIndex;
-                                const pt = pointsReference[idx];
-                                return pt ? formatFullTimestamp(pt.t) : tooltipItems[0].label;
+                                const rawObj = tooltipItems[0].raw;
+                                const pt = rawObj ? rawObj.raw : null;
+                                return pt ? formatFullTimestamp(pt.t) : formatFullTimestamp(new Date(tooltipItems[0].parsed.x).toISOString());
                             },
                             label: (context) => {
-                                const idx = context.dataIndex;
-                                const pt = pointsReference[idx];
-                                if (!pt || pt.v === null) return `${context.dataset.label}: [Missing / Gap]`;
+                                const rawObj = context.raw;
+                                const pt = rawObj ? rawObj.raw : null;
+                                if (!pt || pt.v === null || context.parsed.y === null) {
+                                    return `${context.dataset.label}: [Missing / Gap]`;
+                                }
 
                                 let line = `${context.dataset.label}: ${context.parsed.y.toFixed(2)} ${config.unit}`;
                                 if (pt.aggregated && context.dataset.id === 'raw') {
-                                    line += ` (Bucket of ${pt.count}: min ${pt.min}, max ${pt.max}, avg ${pt.avg})`;
+                                    line += ` (Bucket: min ${pt.min}, max ${pt.max}, avg ${pt.avg})`;
                                 }
                                 return line;
                             }
@@ -792,12 +930,18 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
                         }
                     },
                     x: {
+                        type: 'linear',
+                        min: minTime,
+                        max: maxTime,
                         grid: { display: false },
                         ticks: {
                             autoSkip: true,
                             maxTicksLimit: 8,
                             maxRotation: 0,
-                            font: { size: 10 }
+                            font: { size: 10 },
+                            callback: function(value) {
+                                return formatAxisTime(new Date(value).toISOString(), range);
+                            }
                         }
                     }
                 }
@@ -806,12 +950,13 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
     }
 
     if (totalGaps > 0) {
-        updateMetaChips(primarySeries.length, false, totalGaps);
+        const total = (seriesMap.temperature || []).length;
+        updateMetaChips(total, false, totalGaps);
     }
 }
 
 /**
- * Render single chart when an individual metric is chosen
+ * Render single chart when an individual metric is chosen (S1, S2, S3, S4)
  */
 function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSize, range) {
     const ctx = document.getElementById('data-chart');
@@ -833,26 +978,45 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
         rollingBorder: '#1e293b'
     };
 
-    const { points: processedPoints, gapCount } = insertMissingGaps(points);
+    const { rawData, rollingData, gapCount } = prepareSeriesForContinuousAxis(
+        points,
+        rawEnabled,
+        rollingEnabled,
+        windowSize
+    );
+
     if (gapCount > 0) {
         updateMetaChips(points.length, false, gapCount);
     }
 
-    const labels = processedPoints.map(p => formatAxisTime(p.t, range));
+    let minTime = Infinity;
+    let maxTime = -Infinity;
+    for (const p of points) {
+        if (!p.t) continue;
+        const ms = new Date(p.t).getTime();
+        if (ms < minTime) minTime = ms;
+        if (ms > maxTime) maxTime = ms;
+    }
+    if (minTime === Infinity || maxTime === -Infinity) {
+        const now = Date.now();
+        minTime = now - 3600000;
+        maxTime = now;
+    }
+
     const datasets = [];
 
     if (rawEnabled) {
         datasets.push({
             id: 'raw',
             label: `Raw ${config.title} (${config.unit})`,
-            data: processedPoints.map(p => p.v),
+            data: rawData,
             borderColor: config.rawBorder,
             backgroundColor: config.rawBg,
             borderWidth: 2.5,
             fill: true,
             tension: 0.25,
             spanGaps: false,
-            pointRadius: processedPoints.length > 200 ? 1 : 3,
+            pointRadius: rawData.length > 200 ? 1 : 3,
             pointHoverRadius: 6,
             pointBackgroundColor: config.color,
             pointBorderColor: '#ffffff',
@@ -860,12 +1024,11 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
         });
     }
 
-    if (rollingEnabled && processedPoints.length > 0) {
-        const rawVals = processedPoints.map(p => p.v);
+    if (rollingEnabled && rollingData.length > 0) {
         datasets.push({
             id: 'rolling',
             label: `Rolling Avg (${windowSize})`,
-            data: computeRollingValues(rawVals, windowSize),
+            data: rollingData,
             borderColor: config.rollingBorder,
             backgroundColor: 'transparent',
             borderWidth: 3,
@@ -882,12 +1045,9 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
     const chartLoading = document.getElementById('chart-loading');
     if (chartLoading) chartLoading.style.display = 'none';
 
-    const pointsReference = processedPoints;
-
     chart = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: labels,
             datasets: datasets
         },
         options: {
@@ -895,7 +1055,8 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
             maintainAspectRatio: false,
             animation: false,
             interaction: {
-                mode: 'index',
+                mode: 'nearest',
+                axis: 'x',
                 intersect: false,
             },
             plugins: {
@@ -914,14 +1075,16 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
                     callbacks: {
                         title: (tooltipItems) => {
                             if (!tooltipItems.length) return '';
-                            const idx = tooltipItems[0].dataIndex;
-                            const pt = pointsReference[idx];
-                            return pt ? formatFullTimestamp(pt.t) : tooltipItems[0].label;
+                            const rawObj = tooltipItems[0].raw;
+                            const pt = rawObj ? rawObj.raw : null;
+                            return pt ? formatFullTimestamp(pt.t) : formatFullTimestamp(new Date(tooltipItems[0].parsed.x).toISOString());
                         },
                         label: (context) => {
-                            const idx = context.dataIndex;
-                            const pt = pointsReference[idx];
-                            if (!pt || pt.v === null) return `${context.dataset.label}: [Missing / Gap]`;
+                            const rawObj = context.raw;
+                            const pt = rawObj ? rawObj.raw : null;
+                            if (!pt || pt.v === null || context.parsed.y === null) {
+                                return `${context.dataset.label}: [Missing / Gap]`;
+                            }
 
                             let line = `${context.dataset.label}: ${context.parsed.y.toFixed(2)} ${config.unit}`;
                             if (pt.aggregated && context.dataset.id === 'raw') {
@@ -939,11 +1102,17 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
                     title: { display: true, text: config.unit }
                 },
                 x: {
+                    type: 'linear',
+                    min: minTime,
+                    max: maxTime,
                     grid: { display: false },
                     ticks: {
                         autoSkip: true,
                         maxTicksLimit: 10,
-                        maxRotation: 0
+                        maxRotation: 0,
+                        callback: function(value) {
+                            return formatAxisTime(new Date(value).toISOString(), range);
+                        }
                     }
                 }
             }
@@ -951,35 +1120,6 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
     });
 
     charts.single = chart;
-}
-
-/**
- * Compute rolling average over an array of numeric values.
- */
-function computeRollingValues(values, windowSize) {
-    if (!values || values.length === 0) return [];
-    if (windowSize <= 1) return [...values];
-    const result = [];
-    let sum = 0;
-    let count = 0;
-    const window = [];
-
-    for (let i = 0; i < values.length; i++) {
-        const val = values[i];
-        if (val !== null && val !== undefined && !isNaN(val)) {
-            window.push(val);
-            sum += val;
-            count++;
-            if (window.length > windowSize) {
-                sum -= window.shift();
-                count--;
-            }
-            result.push(sum / count);
-        } else {
-            result.push(null);
-        }
-    }
-    return result;
 }
 
 /**

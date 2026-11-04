@@ -48,50 +48,83 @@ VALID_METRICS = {"temperature", "humidity", "windspeed", "wind_speed"}
 def downsample_peak_trough(points, max_points=300):
     """Downsample time series while strictly preserving extreme peaks and troughs in each bucket.
 
-    Divides points chronologically into buckets and retains local minimum and maximum
-    points in chronological order, ensuring significant spikes and dips remain visible.
-    Enriches downsampled points with aggregated metadata (min, max, avg, count).
+    Preserves explicit null/gap boundaries by downsampling each contiguous valid segment
+    independently and preserving gap separator points. Coalesces consecutive nulls into a single
+    gap boundary. Enriches downsampled points with aggregated metadata (min, max, avg, count).
     """
-    if not points or len(points) <= max_points or max_points < 4:
+    if not points or len(points) <= max_points or max_points < 2:
         return points
 
-    num_buckets = max(1, max_points // 2)
-    bucket_size = len(points) / num_buckets
+    # Split into contiguous valid segments and coalesce consecutive null points
+    segments = []
+    current_segment = []
+
+    for p in points:
+        if p.get("v") is None:
+            if current_segment:
+                segments.append(("valid", current_segment))
+                current_segment = []
+            if not segments or segments[-1][0] != "gap":
+                segments.append(("gap", p))
+        else:
+            current_segment.append(p)
+    if current_segment:
+        segments.append(("valid", current_segment))
+
+    total_valid = sum(len(seg) for tag, seg in segments if tag == "valid")
+    if total_valid == 0:
+        return [data for tag, data in segments if tag == "gap"]
+
+    gap_count = sum(1 for tag, _ in segments if tag == "gap")
+    available_budget = max(2, max_points - gap_count)
 
     result = []
-    for b in range(num_buckets):
-        start_idx = int(b * bucket_size)
-        end_idx = int((b + 1) * bucket_size) if b < num_buckets - 1 else len(points)
-        bucket = points[start_idx:end_idx]
-        if not bucket:
+    for tag, data in segments:
+        if tag == "gap":
+            result.append(data)
             continue
 
-        valid_points = [p for p in bucket if p.get("v") is not None]
-        if not valid_points:
-            result.append(bucket[0])
+        seg_budget = max(2, int(available_budget * (len(data) / total_valid)))
+        if len(data) <= seg_budget or seg_budget < 2:
+            result.extend(data)
             continue
 
-        min_pt = min(valid_points, key=lambda p: p["v"])
-        max_pt = max(valid_points, key=lambda p: p["v"])
-        avg_val = round(sum(p["v"] for p in valid_points) / len(valid_points), 2)
-        min_val = round(min_pt["v"], 2)
-        max_val = round(max_pt["v"], 2)
-        count = len(valid_points)
+        num_buckets = max(1, seg_budget // 2)
+        bucket_size = len(data) / num_buckets
 
-        # Chronological order within bucket
-        if min_pt["t"] <= max_pt["t"]:
-            first_pt, second_pt = min_pt, max_pt
-        else:
-            first_pt, second_pt = max_pt, min_pt
+        for b in range(num_buckets):
+            start_idx = int(b * bucket_size)
+            end_idx = int((b + 1) * bucket_size) if b < num_buckets - 1 else len(data)
+            bucket = data[start_idx:end_idx]
+            if not bucket:
+                continue
 
-        p1 = dict(first_pt)
-        p1.update({"min": min_val, "max": max_val, "avg": avg_val, "count": count, "aggregated": True})
-        result.append(p1)
+            valid_points = [p for p in bucket if p.get("v") is not None]
+            if not valid_points:
+                result.append(bucket[0])
+                continue
 
-        if second_pt != first_pt and count > 1:
-            p2 = dict(second_pt)
-            p2.update({"min": min_val, "max": max_val, "avg": avg_val, "count": count, "aggregated": True})
-            result.append(p2)
+            min_pt = min(valid_points, key=lambda p: p["v"])
+            max_pt = max(valid_points, key=lambda p: p["v"])
+            avg_val = round(sum(p["v"] for p in valid_points) / len(valid_points), 2)
+            min_val = round(min_pt["v"], 2)
+            max_val = round(max_pt["v"], 2)
+            count = len(valid_points)
+
+            # Chronological order within bucket
+            if min_pt["t"] <= max_pt["t"]:
+                first_pt, second_pt = min_pt, max_pt
+            else:
+                first_pt, second_pt = max_pt, min_pt
+
+            p1 = dict(first_pt)
+            p1.update({"min": min_val, "max": max_val, "avg": avg_val, "count": count, "aggregated": True})
+            result.append(p1)
+
+            if second_pt != first_pt and count > 1:
+                p2 = dict(second_pt)
+                p2.update({"min": min_val, "max": max_val, "avg": avg_val, "count": count, "aggregated": True})
+                result.append(p2)
 
     return result
 
