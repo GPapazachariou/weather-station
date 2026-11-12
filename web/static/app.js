@@ -36,7 +36,7 @@ let activeAbortController = null;
 const PREFS_STORAGE_KEY = 'weather_station_preferences';
 const THEME_STORAGE_KEY = 'weather_station_theme';
 let currentDisplayFormat = 'chart';
-let currentTheme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+let currentTheme = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
 const STALE_THRESHOLD_SECONDS = 180; // 3 minutes without new telemetry
 
 const METRIC_CONFIGS = {
@@ -111,7 +111,7 @@ METRIC_CONFIGS.wind_speed = METRIC_CONFIGS.windspeed;
  * Return theme-aware chart palette tokens for light vs dark mode
  */
 function getChartThemeTokens() {
-    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
     return {
         isDark,
         legendColor: isDark ? '#a8bbd1' : '#3b4d63',
@@ -128,7 +128,7 @@ function getChartThemeTokens() {
  * Resolve metric colors for current theme
  */
 function getThemedMetricColors(config) {
-    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
     return {
         color: (isDark && config.darkColor) ? config.darkColor : config.color,
         rawBorder: (isDark && config.darkRawBorder) ? config.darkRawBorder : config.rawBorder,
@@ -141,7 +141,7 @@ function getThemedMetricColors(config) {
  * Apply theme ('light' | 'dark') to document, update toggle button UI, and refresh chart styling
  */
 function applyTheme(theme, persist = true) {
-    currentTheme = theme === 'dark' ? 'dark' : 'light';
+    currentTheme = theme === 'light' ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', currentTheme);
 
     const toggleBtn = document.getElementById('btn-theme-toggle');
@@ -267,14 +267,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     startLastUpdatedTimer();
 
-    // Restore saved preferences before initial queries
+    // Restore saved preferences before initial queries (defaulting to dark theme)
     const savedPrefs = loadPreferences();
     const savedTheme = (savedPrefs && savedPrefs.theme) || localStorage.getItem(THEME_STORAGE_KEY);
     if (savedTheme === 'dark' || savedTheme === 'light') {
         applyTheme(savedTheme, false);
     } else {
-        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-        applyTheme(prefersDark ? 'dark' : 'light', false);
+        applyTheme('dark', false);
     }
 
     if (savedPrefs) {

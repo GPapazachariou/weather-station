@@ -68,6 +68,7 @@
     --transition-fast: 0.14s ease-out;
 }
 
+:root:not([data-theme="light"]),
 :root[data-theme="dark"] {
     color-scheme: dark;
 
@@ -110,6 +111,10 @@
     --dew-subtle: rgba(167, 139, 250, 0.15);
 }
 
+:root[data-theme="light"] {
+    color-scheme: light;
+}
+
 /* ==========================================================================
    Base & Reset
    ========================================================================== */
@@ -123,7 +128,7 @@
 html {
     font-size: 15px;
     -webkit-text-size-adjust: 100%;
-    color-scheme: light;
+    color-scheme: dark;
 }
 
 body {
@@ -464,15 +469,18 @@ body {
     display: none;
 }
 
+:root:not([data-theme="light"]) .theme-icon-moon,
 :root[data-theme="dark"] .theme-icon-moon {
     display: none;
 }
 
+:root:not([data-theme="light"]) .theme-icon-sun,
 :root[data-theme="dark"] .theme-icon-sun {
     display: inline-block;
     color: #fbbf24;
 }
 
+:root:not([data-theme="light"]) .btn-theme-toggle,
 :root[data-theme="dark"] .btn-theme-toggle {
     background: rgba(56, 189, 248, 0.12);
     border-color: rgba(56, 189, 248, 0.32);
@@ -559,6 +567,7 @@ body {
     transition: border-color var(--transition-fast);
 }
 
+:root:not([data-theme="light"]) .dropdown,
 :root[data-theme="dark"] .dropdown {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23a8bbd1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
 }
@@ -722,6 +731,7 @@ body {
     border-color: #7dd3fc;
 }
 
+:root:not([data-theme="light"]) .meta-chip-loading,
 :root[data-theme="dark"] .meta-chip-loading {
     background: rgba(56, 189, 248, 0.15);
     color: #7dd3fc;
@@ -744,6 +754,7 @@ body {
     border-color: rgba(11, 110, 153, 0.25);
 }
 
+:root:not([data-theme="light"]) .meta-chip-info,
 :root[data-theme="dark"] .meta-chip-info {
     border-color: rgba(56, 189, 248, 0.3);
 }
@@ -754,6 +765,7 @@ body {
     border-color: #fcd34d;
 }
 
+:root:not([data-theme="light"]) .meta-chip-warning,
 :root[data-theme="dark"] .meta-chip-warning {
     background: rgba(245, 158, 11, 0.16);
     color: #fcd34d;
@@ -781,6 +793,7 @@ body {
     color: #7f1d1d;
 }
 
+:root:not([data-theme="light"]) .error-banner,
 :root[data-theme="dark"] .error-banner {
     background: rgba(127, 29, 29, 0.35);
     border-color: rgba(248, 113, 113, 0.45);
