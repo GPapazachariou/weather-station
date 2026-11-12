@@ -205,6 +205,34 @@ class TestAccessibilityAndUX:
         assert "latestTelemetryTime" in js
         assert "fetchStats(q, null, fetchId, station, metric, range)" in js
 
+    def test_dark_theme_is_default(self, client):
+        """Dashboard HTML must default to data-theme='dark' and provide dark theme controls."""
+        response = client.get("/")
+        assert response.status_code == 200
+        html = response.data.decode("utf-8")
+        assert '<html lang="en" data-theme="dark">' in html
+        assert 'id="btn-theme-toggle"' in html
+        assert 'aria-pressed="true"' in html
+        assert 'Switch to light theme' in html
+        assert 'id="theme-toggle-label">Light</span>' in html
+
+    def test_dark_theme_styles_and_tokens(self, client):
+        """styles.css must default to dark color-scheme and provide dark theme root tokens."""
+        response = client.get("/static/styles.css")
+        assert response.status_code == 200
+        css = response.data.decode("utf-8")
+        assert ':root:not([data-theme="light"])' in css
+        assert ':root[data-theme="dark"]' in css
+        assert 'color-scheme: dark;' in css
+
+    def test_app_js_defaults_to_dark_theme(self, client):
+        """app.js must default currentTheme and preference loading to dark theme."""
+        response = client.get("/static/app.js")
+        assert response.status_code == 200
+        js = response.data.decode("utf-8")
+        assert "document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark'" in js
+        assert "applyTheme('dark', false)" in js
+
 
 
 # ============================================================================

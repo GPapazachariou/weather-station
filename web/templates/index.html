@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -13,8 +13,7 @@
             try {
                 var prefs = JSON.parse(localStorage.getItem('weather_station_preferences') || '{}');
                 var savedTheme = prefs.theme || localStorage.getItem('weather_station_theme');
-                var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-                var theme = (savedTheme === 'dark' || savedTheme === 'light') ? savedTheme : (prefersDark ? 'dark' : 'light');
+                var theme = (savedTheme === 'dark' || savedTheme === 'light') ? savedTheme : 'dark';
                 document.documentElement.setAttribute('data-theme', theme);
             } catch (e) {}
         })();
@@ -104,7 +103,7 @@
                     </svg>
                     <span>Refresh</span>
                 </button>
-                <button type="button" id="btn-theme-toggle" class="btn-theme-toggle" aria-label="Toggle dark theme" aria-pressed="false" onclick="toggleTheme()" title="Switch between day and night console theme">
+                <button type="button" id="btn-theme-toggle" class="btn-theme-toggle" aria-label="Switch to light theme" aria-pressed="true" onclick="toggleTheme()" title="Switch between day and night console theme">
                     <svg class="theme-icon theme-icon-moon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
                     </svg>
@@ -119,7 +118,7 @@
                         <path d="m6.34 17.66-1.41 1.41"></path>
                         <path d="m19.07 4.93-1.41 1.41"></path>
                     </svg>
-                    <span id="theme-toggle-label">Dark</span>
+                    <span id="theme-toggle-label">Light</span>
                 </button>
             </div>
         </header>
