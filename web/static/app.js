@@ -34,52 +34,70 @@ let activeAbortController = null;
 
 // User preferences storage key and display mode ('chart' | 'table')
 const PREFS_STORAGE_KEY = 'weather_station_preferences';
+const THEME_STORAGE_KEY = 'weather_station_theme';
 let currentDisplayFormat = 'chart';
+let currentTheme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
 const STALE_THRESHOLD_SECONDS = 180; // 3 minutes without new telemetry
 
 const METRIC_CONFIGS = {
     temperature: {
         id: 'temperature',
-        title: 'Temperature',
+        title: 'Air temperature',
         unit: '°C',
         canvasId: 'chart-temperature',
-        color: '#ef4444',
-        rawBorder: '#f87171',
-        rawBg: 'rgba(239, 68, 68, 0.12)',
-        rollingBorder: '#991b1b',
+        color: '#c83e2b',
+        rawBorder: '#d94f3d',
+        rawBg: 'rgba(200, 62, 43, 0.08)',
+        rollingBorder: '#7f1d1d',
+        darkColor: '#f87171',
+        darkRawBorder: '#f87171',
+        darkRawBg: 'rgba(248, 113, 113, 0.14)',
+        darkRollingBorder: '#fecaca',
         dotClass: 'temp-dot'
     },
     humidity: {
         id: 'humidity',
-        title: 'Humidity',
+        title: 'Relative humidity',
         unit: '%',
         canvasId: 'chart-humidity',
-        color: '#0284c7',
-        rawBorder: '#38bdf8',
-        rawBg: 'rgba(2, 132, 199, 0.12)',
-        rollingBorder: '#075985',
+        color: '#0b6e99',
+        rawBorder: '#0ea5e9',
+        rawBg: 'rgba(11, 110, 153, 0.08)',
+        rollingBorder: '#0c4a6e',
+        darkColor: '#38bdf8',
+        darkRawBorder: '#38bdf8',
+        darkRawBg: 'rgba(56, 189, 248, 0.14)',
+        darkRollingBorder: '#bae6fd',
         dotClass: 'hum-dot'
     },
     windspeed: {
         id: 'windspeed',
-        title: 'Wind Speed',
+        title: 'Wind velocity',
         unit: 'm/s',
         canvasId: 'chart-windspeed',
-        color: '#059669',
-        rawBorder: '#34d399',
-        rawBg: 'rgba(5, 150, 105, 0.12)',
+        color: '#13755b',
+        rawBorder: '#10b981',
+        rawBg: 'rgba(19, 117, 91, 0.08)',
         rollingBorder: '#064e3b',
+        darkColor: '#34d399',
+        darkRawBorder: '#34d399',
+        darkRawBg: 'rgba(52, 211, 153, 0.14)',
+        darkRollingBorder: '#a7f3d0',
         dotClass: 'wind-dot'
     },
     dew_point: {
         id: 'dew_point',
-        title: 'Dew Point',
+        title: 'Dew point',
         unit: '°C',
         canvasId: 'chart-dewpoint',
-        color: '#8b5cf6',
-        rawBorder: '#a78bfa',
-        rawBg: 'rgba(139, 92, 246, 0.12)',
-        rollingBorder: '#6d28d9',
+        color: '#5b4699',
+        rawBorder: '#7c3aed',
+        rawBg: 'rgba(91, 70, 153, 0.08)',
+        rollingBorder: '#3b0764',
+        darkColor: '#a78bfa',
+        darkRawBorder: '#a78bfa',
+        darkRawBg: 'rgba(167, 139, 250, 0.15)',
+        darkRollingBorder: '#ddd6fe',
         dotClass: 'dew-dot',
         isCalculated: true
     }
@@ -88,6 +106,116 @@ const METRIC_CONFIGS = {
 // Aliases for compatibility
 METRIC_CONFIGS.dewpoint = METRIC_CONFIGS.dew_point;
 METRIC_CONFIGS.wind_speed = METRIC_CONFIGS.windspeed;
+
+/**
+ * Return theme-aware chart palette tokens for light vs dark mode
+ */
+function getChartThemeTokens() {
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    return {
+        isDark,
+        legendColor: isDark ? '#a8bbd1' : '#3b4d63',
+        tickColor: isDark ? '#768ca8' : '#61748a',
+        gridY: isDark ? 'rgba(57, 82, 115, 0.42)' : 'rgba(197, 209, 222, 0.55)',
+        gridX: isDark ? 'rgba(37, 56, 82, 0.45)' : 'rgba(221, 229, 238, 0.45)',
+        pointBorder: isDark ? '#111c2b' : '#ffffff',
+        tooltipBg: isDark ? 'rgba(7, 13, 22, 0.96)' : 'rgba(15, 27, 41, 0.95)',
+        tooltipBorder: isDark ? 'rgba(56, 189, 248, 0.3)' : 'rgba(148, 163, 184, 0.25)'
+    };
+}
+
+/**
+ * Resolve metric colors for current theme
+ */
+function getThemedMetricColors(config) {
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    return {
+        color: (isDark && config.darkColor) ? config.darkColor : config.color,
+        rawBorder: (isDark && config.darkRawBorder) ? config.darkRawBorder : config.rawBorder,
+        rawBg: (isDark && config.darkRawBg) ? config.darkRawBg : config.rawBg,
+        rollingBorder: (isDark && config.darkRollingBorder) ? config.darkRollingBorder : config.rollingBorder
+    };
+}
+
+/**
+ * Apply theme ('light' | 'dark') to document, update toggle button UI, and refresh chart styling
+ */
+function applyTheme(theme, persist = true) {
+    currentTheme = theme === 'dark' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', currentTheme);
+
+    const toggleBtn = document.getElementById('btn-theme-toggle');
+    const toggleLabel = document.getElementById('theme-toggle-label');
+    if (toggleBtn) {
+        const isDark = currentTheme === 'dark';
+        toggleBtn.setAttribute('aria-pressed', isDark ? 'true' : 'false');
+        toggleBtn.setAttribute('aria-label', isDark ? 'Switch to light theme' : 'Switch to dark theme');
+    }
+    if (toggleLabel) {
+        toggleLabel.textContent = currentTheme === 'dark' ? 'Light' : 'Dark';
+    }
+
+    if (persist) {
+        try {
+            localStorage.setItem(THEME_STORAGE_KEY, currentTheme);
+        } catch (e) {}
+        savePreferences();
+    }
+
+    updateActiveChartsTheme();
+}
+
+/**
+ * Toggle between light and dark theme
+ */
+function toggleTheme() {
+    const next = currentTheme === 'dark' ? 'light' : 'dark';
+    applyTheme(next, true);
+}
+
+/**
+ * Update existing Chart.js instances in-place when theme switches
+ */
+function updateActiveChartsTheme() {
+    const tokens = getChartThemeTokens();
+    Object.entries(charts).forEach(([key, inst]) => {
+        if (!inst) return;
+        const metricKey = key === 'single' ? (document.getElementById('metric-select')?.value || 'temperature') : key;
+        const config = METRIC_CONFIGS[metricKey] || METRIC_CONFIGS.temperature;
+        const mColors = getThemedMetricColors(config);
+
+        if (inst.options?.plugins?.legend?.labels) {
+            inst.options.plugins.legend.labels.color = tokens.legendColor;
+        }
+        if (inst.options?.plugins?.tooltip) {
+            inst.options.plugins.tooltip.backgroundColor = tokens.tooltipBg;
+            inst.options.plugins.tooltip.borderColor = tokens.tooltipBorder;
+        }
+        if (inst.options?.scales?.y) {
+            if (inst.options.scales.y.grid) inst.options.scales.y.grid.color = tokens.gridY;
+            if (inst.options.scales.y.title) inst.options.scales.y.title.color = tokens.tickColor;
+            if (inst.options.scales.y.ticks) inst.options.scales.y.ticks.color = tokens.tickColor;
+        }
+        if (inst.options?.scales?.x) {
+            if (inst.options.scales.x.grid) inst.options.scales.x.grid.color = tokens.gridX;
+            if (inst.options.scales.x.ticks) inst.options.scales.x.ticks.color = tokens.tickColor;
+        }
+
+        if (Array.isArray(inst.data?.datasets)) {
+            inst.data.datasets.forEach(ds => {
+                if (ds.id === 'raw') {
+                    ds.borderColor = mColors.rawBorder;
+                    ds.backgroundColor = mColors.rawBg;
+                    ds.pointBackgroundColor = mColors.color;
+                    ds.pointBorderColor = tokens.pointBorder;
+                } else if (ds.id === 'rolling') {
+                    ds.borderColor = mColors.rollingBorder;
+                }
+            });
+        }
+        inst.update('none');
+    });
+}
 
 /**
  * Save user control selections to localStorage
@@ -110,7 +238,8 @@ function savePreferences() {
             toggleRaw,
             toggleRolling,
             rollingWindow,
-            displayFormat: currentDisplayFormat
+            displayFormat: currentDisplayFormat,
+            theme: currentTheme
         };
         localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(prefs));
     } catch (e) {
@@ -140,6 +269,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Restore saved preferences before initial queries
     const savedPrefs = loadPreferences();
+    const savedTheme = (savedPrefs && savedPrefs.theme) || localStorage.getItem(THEME_STORAGE_KEY);
+    if (savedTheme === 'dark' || savedTheme === 'light') {
+        applyTheme(savedTheme, false);
+    } else {
+        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        applyTheme(prefersDark ? 'dark' : 'light', false);
+    }
+
     if (savedPrefs) {
         if (savedPrefs.metric) {
             const metricEl = document.getElementById('metric-select');
@@ -190,6 +327,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('toggleRaw').addEventListener('change', onToggleChange);
     document.getElementById('toggleRolling').addEventListener('change', onToggleChange);
     document.getElementById('rollingWindow').addEventListener('change', onToggleChange);
+
+    window.addEventListener('resize', () => {
+        const isCompact = window.innerWidth <= 480;
+        Object.entries(charts).forEach(([key, inst]) => {
+            if (inst && typeof inst.resize === 'function') {
+                if (inst.options?.scales?.x?.ticks) {
+                    inst.options.scales.x.ticks.maxTicksLimit = key === 'single' ? (isCompact ? 5 : 10) : (isCompact ? 5 : 7);
+                }
+                inst.resize();
+            }
+        });
+    });
 
     // Initial data fetch and start live stream
     await refreshAll();
@@ -670,6 +819,11 @@ function updateContainerVisibility(metric, format) {
         if (singleStats) singleStats.style.display = 'grid';
     }
 
+    const quickReadings = document.getElementById('context-quick-readings');
+    if (quickReadings) {
+        quickReadings.style.display = (metric === 'all') ? 'none' : 'inline-flex';
+    }
+
     // Format visibility
     if (format === 'table') {
         if (multiPanels) multiPanels.style.display = 'none';
@@ -678,7 +832,7 @@ function updateContainerVisibility(metric, format) {
     } else {
         if (tableContainer) tableContainer.style.display = 'none';
         if (metric === 'all') {
-            if (multiPanels) multiPanels.style.display = 'flex';
+            if (multiPanels) multiPanels.style.display = 'grid';
             if (singleChart) singleChart.style.display = 'none';
         } else {
             if (multiPanels) multiPanels.style.display = 'none';
@@ -1170,13 +1324,13 @@ function updateMetaChips(totalCount, isAggregated, gapCount = 0) {
     const gapChip = document.getElementById('meta-gaps');
 
     if (countChip) {
-        countChip.textContent = `📊 Total: ${totalCount} readings`;
+        countChip.textContent = `${totalCount} samples`;
     }
 
     if (aggChip) {
         if (isAggregated) {
             aggChip.style.display = 'inline-flex';
-            aggChip.textContent = '⚡ Downsampled (Significant Peaks & Troughs Preserved)';
+            aggChip.textContent = 'Peak/trough preserved';
         } else {
             aggChip.style.display = 'none';
         }
@@ -1185,7 +1339,7 @@ function updateMetaChips(totalCount, isAggregated, gapCount = 0) {
     if (gapChip) {
         if (gapCount > 0) {
             gapChip.style.display = 'inline-flex';
-            gapChip.textContent = `⚠️ ${gapCount} data gap${gapCount > 1 ? 's' : ''} detected`;
+            gapChip.textContent = `${gapCount} gap${gapCount > 1 ? 's' : ''} detected`;
         } else {
             gapChip.style.display = 'none';
         }
@@ -1539,6 +1693,7 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
     let anyAggregated = false;
     const metrics = ['temperature', 'humidity', 'windspeed', 'dew_point'];
     const { minTime, maxTime } = getCommonTimeBounds(seriesMap);
+    const tokens = getChartThemeTokens();
 
     for (const m of metrics) {
         const rawPoints = seriesMap[m] || [];
@@ -1552,6 +1707,7 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
         if (isAggregated) anyAggregated = true;
 
         const config = METRIC_CONFIGS[m];
+        const mColors = getThemedMetricColors(config);
         const ctx = document.getElementById(config.canvasId);
         if (!ctx) continue;
 
@@ -1564,18 +1720,18 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
         if (rawEnabled) {
             datasets.push({
                 id: 'raw',
-                label: `Raw ${config.title} (${config.unit})`,
+                label: `Raw trace (${config.unit})`,
                 data: rawData,
-                borderColor: config.rawBorder,
-                backgroundColor: config.rawBg,
-                borderWidth: 2,
+                borderColor: mColors.rawBorder,
+                backgroundColor: mColors.rawBg,
+                borderWidth: 1.6,
                 fill: true,
-                tension: 0.2,
+                tension: 0.18,
                 spanGaps: false, // Ensures missing data renders as explicit line breaks (S4)
-                pointRadius: rawData.length > 150 ? 1 : 3,
-                pointHoverRadius: 5,
-                pointBackgroundColor: config.color,
-                pointBorderColor: '#ffffff',
+                pointRadius: rawData.length > 120 ? 0 : 2,
+                pointHoverRadius: 4,
+                pointBackgroundColor: mColors.color,
+                pointBorderColor: tokens.pointBorder,
                 pointBorderWidth: 1,
             });
         }
@@ -1583,12 +1739,12 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
         if (rollingEnabled && rollingData.length > 0) {
             datasets.push({
                 id: 'rolling',
-                label: `Rolling Avg (${windowSize})`,
+                label: `Rolling mean (${windowSize})`,
                 data: rollingData,
-                borderColor: config.rollingBorder,
+                borderColor: mColors.rollingBorder,
                 backgroundColor: 'transparent',
-                borderWidth: 2.5,
-                borderDash: [6, 3],
+                borderWidth: 2.1,
+                borderDash: [5, 3],
                 fill: false,
                 tension: 0.25,
                 spanGaps: false,
@@ -1606,6 +1762,9 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
                 responsive: true,
                 maintainAspectRatio: false,
                 animation: false,
+                layout: {
+                    padding: { top: 6, right: 10, bottom: 2, left: 0 }
+                },
                 interaction: {
                     mode: 'nearest',
                     axis: 'x',
@@ -1615,21 +1774,26 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
                     legend: {
                         display: true,
                         position: 'top',
+                        align: 'end',
                         labels: {
-                            boxWidth: 14,
-                            padding: 10,
-                            font: { size: 11, weight: '600' }
+                            boxWidth: 12,
+                            boxHeight: 2,
+                            padding: 8,
+                            color: tokens.legendColor,
+                            font: { family: '"Instrument Sans", -apple-system, sans-serif', size: 10.5, weight: '600' }
                         }
                     },
                     tooltip: {
                         enabled: true,
-                        backgroundColor: 'rgba(15, 23, 42, 0.94)',
+                        backgroundColor: tokens.tooltipBg,
                         titleColor: '#f8fafc',
                         bodyColor: '#e2e8f0',
-                        borderColor: 'rgba(255, 255, 255, 0.1)',
+                        borderColor: tokens.tooltipBorder,
                         borderWidth: 1,
-                        padding: 10,
-                        cornerRadius: 8,
+                        padding: 9,
+                        cornerRadius: 4,
+                        titleFont: { family: '"JetBrains Mono", monospace', size: 11 },
+                        bodyFont: { family: '"JetBrains Mono", monospace', size: 11 },
                         callbacks: {
                             title: (tooltipItems) => {
                                 if (!tooltipItems.length) return '';
@@ -1656,29 +1820,30 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
                 scales: {
                     y: {
                         beginAtZero: false,
-                        grid: { color: 'rgba(226, 232, 240, 0.7)' },
+                        grace: '8%',
+                        grid: { color: tokens.gridY },
                         title: {
                             display: true,
                             text: config.unit,
-                            color: '#64748b',
-                            font: { family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', size: 11, weight: 'bold' }
+                            color: tokens.tickColor,
+                            font: { family: '"JetBrains Mono", monospace', size: 10, weight: '600' }
                         },
                         ticks: {
-                            color: '#64748b',
-                            font: { family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', size: 11 }
+                            color: tokens.tickColor,
+                            font: { family: '"JetBrains Mono", monospace', size: 10 }
                         }
                     },
                     x: {
                         type: 'linear',
                         min: minTime,
                         max: maxTime,
-                        grid: { display: false },
+                        grid: { color: tokens.gridX },
                         ticks: {
-                            color: '#64748b',
+                            color: tokens.tickColor,
                             autoSkip: true,
-                            maxTicksLimit: 8,
+                            maxTicksLimit: window.innerWidth <= 480 ? 5 : 7,
                             maxRotation: 0,
-                            font: { family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', size: 11 },
+                            font: { family: '"JetBrains Mono", monospace', size: 10 },
                             callback: function(value) {
                                 return formatAxisTime(new Date(value).toISOString(), range);
                             }
@@ -1710,11 +1875,13 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
     const config = METRIC_CONFIGS[metric] || {
         title: metric.charAt(0).toUpperCase() + metric.slice(1),
         unit: '',
-        color: '#667eea',
-        rawBorder: '#667eea',
-        rawBg: 'rgba(102, 126, 234, 0.1)',
-        rollingBorder: '#1e293b'
+        color: '#0b6e99',
+        rawBorder: '#0b6e99',
+        rawBg: 'rgba(11, 110, 153, 0.08)',
+        rollingBorder: '#0f1b29'
     };
+    const mColors = getThemedMetricColors(config);
+    const tokens = getChartThemeTokens();
 
     const { rawData, rollingData, gapCount, isAggregated } = prepareSeriesForContinuousAxis(
         points,
@@ -1746,16 +1913,16 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
             id: 'raw',
             label: `Raw ${config.title} (${config.unit})`,
             data: rawData,
-            borderColor: config.rawBorder,
-            backgroundColor: config.rawBg,
-            borderWidth: 2.5,
+            borderColor: mColors.rawBorder,
+            backgroundColor: mColors.rawBg,
+            borderWidth: 2,
             fill: true,
-            tension: 0.25,
+            tension: 0.2,
             spanGaps: false,
-            pointRadius: rawData.length > 200 ? 1 : 3,
-            pointHoverRadius: 6,
-            pointBackgroundColor: config.color,
-            pointBorderColor: '#ffffff',
+            pointRadius: rawData.length > 150 ? 0 : 2.5,
+            pointHoverRadius: 5,
+            pointBackgroundColor: mColors.color,
+            pointBorderColor: tokens.pointBorder,
             pointBorderWidth: 1.5,
         });
     }
@@ -1763,14 +1930,14 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
     if (rollingEnabled && rollingData.length > 0) {
         datasets.push({
             id: 'rolling',
-            label: `Rolling Avg (${windowSize})`,
+            label: `Rolling mean (${windowSize})`,
             data: rollingData,
-            borderColor: config.rollingBorder,
+            borderColor: mColors.rollingBorder,
             backgroundColor: 'transparent',
-            borderWidth: 3,
-            borderDash: [6, 4],
+            borderWidth: 2.4,
+            borderDash: [6, 3],
             fill: false,
-            tension: 0.3,
+            tension: 0.25,
             spanGaps: false,
             pointRadius: 0,
             pointHoverRadius: 5,
@@ -1790,6 +1957,9 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
             responsive: true,
             maintainAspectRatio: false,
             animation: false,
+            layout: {
+                padding: { top: 6, right: 10, bottom: 2, left: 0 }
+            },
             interaction: {
                 mode: 'nearest',
                 axis: 'x',
@@ -1799,15 +1969,26 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
                 legend: {
                     display: true,
                     position: 'top',
-                    labels: { padding: 15, font: { size: 12, weight: 'bold' } }
+                    align: 'end',
+                    labels: {
+                        boxWidth: 14,
+                        boxHeight: 2,
+                        padding: 12,
+                        color: tokens.legendColor,
+                        font: { family: '"Instrument Sans", -apple-system, sans-serif', size: 11.5, weight: '600' }
+                    }
                 },
                 tooltip: {
                     enabled: true,
-                    backgroundColor: 'rgba(15, 23, 42, 0.94)',
+                    backgroundColor: tokens.tooltipBg,
                     titleColor: '#f8fafc',
                     bodyColor: '#e2e8f0',
-                    padding: 12,
-                    cornerRadius: 8,
+                    borderColor: tokens.tooltipBorder,
+                    borderWidth: 1,
+                    padding: 10,
+                    cornerRadius: 4,
+                    titleFont: { family: '"JetBrains Mono", monospace', size: 11 },
+                    bodyFont: { family: '"JetBrains Mono", monospace', size: 11 },
                     callbacks: {
                         title: (tooltipItems) => {
                             if (!tooltipItems.length) return '';
@@ -1834,29 +2015,30 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
             scales: {
                 y: {
                     beginAtZero: false,
-                    grid: { color: 'rgba(226, 232, 240, 0.7)' },
+                    grace: '8%',
+                    grid: { color: tokens.gridY },
                     title: {
                         display: true,
                         text: config.unit,
-                        color: '#64748b',
-                        font: { family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', size: 11, weight: 'bold' }
+                        color: tokens.tickColor,
+                        font: { family: '"JetBrains Mono", monospace', size: 10.5, weight: '600' }
                     },
                     ticks: {
-                        color: '#64748b',
-                        font: { family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', size: 11 }
+                        color: tokens.tickColor,
+                        font: { family: '"JetBrains Mono", monospace', size: 10.5 }
                     }
                 },
                 x: {
                     type: 'linear',
                     min: minTime,
                     max: maxTime,
-                    grid: { display: false },
+                    grid: { color: tokens.gridX },
                     ticks: {
-                        color: '#64748b',
+                        color: tokens.tickColor,
                         autoSkip: true,
-                        maxTicksLimit: 10,
+                        maxTicksLimit: window.innerWidth <= 480 ? 5 : 10,
                         maxRotation: 0,
-                        font: { family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', size: 11 },
+                        font: { family: '"JetBrains Mono", monospace', size: 10.5 },
                         callback: function(value) {
                             return formatAxisTime(new Date(value).toISOString(), range);
                         }

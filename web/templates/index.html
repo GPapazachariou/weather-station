@@ -3,548 +3,579 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Weather Station Dashboard</title>
+    <title>Weather Station Dashboard — Synoptic Telemetry Console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <script>
+        (function() {
+            try {
+                var prefs = JSON.parse(localStorage.getItem('weather_station_preferences') || '{}');
+                var savedTheme = prefs.theme || localStorage.getItem('weather_station_theme');
+                var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+                var theme = (savedTheme === 'dark' || savedTheme === 'light') ? savedTheme : (prefersDark ? 'dark' : 'light');
+                document.documentElement.setAttribute('data-theme', theme);
+            } catch (e) {}
+        })();
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
     <a href="#main-content" class="skip-link">Skip to main content</a>
     <div class="dashboard-shell container">
-        <!-- Top Navigation & Header -->
+        <!-- Observatory Masthead & Telemetry Status Ribbon -->
         <header class="dashboard-header" role="banner">
-            <div class="header-brand">
-                <div class="brand-icon" aria-hidden="true">⛅</div>
-                <div class="brand-text">
-                    <h1>Weather Station Dashboard</h1>
-                    <p class="subtitle">Real-time environmental telemetry</p>
+            <div class="masthead-left">
+                <div class="header-brand">
+                    <div class="brand-mark" aria-hidden="true">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="9"></circle>
+                            <path d="M12 3v3"></path>
+                            <path d="M12 18v3"></path>
+                            <path d="M3 12h3"></path>
+                            <path d="M18 12h3"></path>
+                            <path d="m16.2 7.8-4.2 4.2-2.5 2.5"></path>
+                            <circle cx="12" cy="12" r="1.5" fill="currentColor"></circle>
+                        </svg>
+                    </div>
+                    <div class="brand-text">
+                        <h1>Weather Station Dashboard</h1>
+                        <p class="subtitle">Synoptic environmental telemetry &amp; barograph console</p>
+                    </div>
                 </div>
+
+                <!-- Integrated Station & Window Context Strip -->
+                <section class="context-hero-bar" id="context-hero-bar" aria-label="Current dashboard overview">
+                    <div class="context-group">
+                        <div class="context-item">
+                            <span class="context-label">Station</span>
+                            <span class="context-value context-station-badge" id="context-station-display">
+                                <strong id="context-station-name">Loading...</strong>
+                            </span>
+                        </div>
+                        <span class="context-divider" aria-hidden="true"></span>
+                        <div class="context-item">
+                            <span class="context-label">Window</span>
+                            <span class="context-value context-period-badge" id="context-period-display">
+                                <strong id="context-range-label">Last 24 hours</strong>
+                            </span>
+                        </div>
+                    </div>
+                    <div class="context-quick-readings" id="context-quick-readings" aria-label="Current conditions summary">
+                        <div class="quick-reading quick-temp" title="Latest Temperature">
+                            <span class="quick-label">Temp</span>
+                            <strong class="quick-val" id="hero-quick-temp">--</strong>
+                        </div>
+                        <div class="quick-reading quick-hum" title="Latest Humidity">
+                            <span class="quick-label">Humidity</span>
+                            <strong class="quick-val" id="hero-quick-hum">--</strong>
+                        </div>
+                        <div class="quick-reading quick-wind" title="Latest Wind Speed">
+                            <span class="quick-label">Wind</span>
+                            <strong class="quick-val" id="hero-quick-wind">--</strong>
+                        </div>
+                        <div class="quick-reading quick-dew" title="Latest Dew Point (Calculated)">
+                            <span class="quick-label">Dew pt</span>
+                            <strong class="quick-val" id="hero-quick-dew">--</strong>
+                        </div>
+                    </div>
+                </section>
             </div>
+
             <div class="live-status-container" role="region" aria-label="Connection and telemetry status">
                 <span id="live-indicator" class="live-badge connected" title="Stream connection status" role="status" aria-live="polite">
                     <span class="live-dot" aria-hidden="true"></span>
                     <span id="live-status-text">Live</span>
                 </span>
                 <button type="button" id="btn-reconnect" class="btn-reconnect" style="display: none;" aria-label="Reconnect live stream" onclick="manualReconnect()">
-                    <span aria-hidden="true">⟳</span> Reconnect Now
+                    Reconnect now
                 </button>
                 <span id="freshness-badge" class="freshness-badge fresh" role="status" aria-live="polite" title="Telemetry freshness indicator">
-                    <span class="freshness-icon" aria-hidden="true">⏱️</span>
                     <span id="freshness-text">Fresh</span>
                 </span>
                 <span id="last-updated" class="last-updated-text" role="status" aria-live="polite">Last updated: just now</span>
                 <button type="button" id="btn-refresh-now" class="btn-refresh-action" aria-label="Refresh telemetry data" onclick="refreshAll()" title="Refresh telemetry data">
-                    <span aria-hidden="true">↻</span> Refresh
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                        <path d="M3 3v5h5"></path>
+                        <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"></path>
+                        <path d="M16 16h5v5"></path>
+                    </svg>
+                    <span>Refresh</span>
+                </button>
+                <button type="button" id="btn-theme-toggle" class="btn-theme-toggle" aria-label="Toggle dark theme" aria-pressed="false" onclick="toggleTheme()" title="Switch between day and night console theme">
+                    <svg class="theme-icon theme-icon-moon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
+                    </svg>
+                    <svg class="theme-icon theme-icon-sun" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <circle cx="12" cy="12" r="4"></circle>
+                        <path d="M12 2v2"></path>
+                        <path d="M12 20v2"></path>
+                        <path d="m4.93 4.93 1.41 1.41"></path>
+                        <path d="m17.66 17.66 1.41 1.41"></path>
+                        <path d="M2 12h2"></path>
+                        <path d="M20 12h2"></path>
+                        <path d="m6.34 17.66-1.41 1.41"></path>
+                        <path d="m19.07 4.93-1.41 1.41"></path>
+                    </svg>
+                    <span id="theme-toggle-label">Dark</span>
                 </button>
             </div>
         </header>
 
         <main id="main-content" class="dashboard-main" tabindex="-1">
-        <!-- Current Context Hero Bar: Immediate visibility into station, period, freshness, and current conditions -->
-        <section class="context-hero-bar" id="context-hero-bar" aria-label="Current dashboard overview">
-            <div class="context-group">
-                <div class="context-item">
-                    <span class="context-label">Active Station</span>
-                    <span class="context-value context-station-badge" id="context-station-display">
-                        <span class="context-icon" aria-hidden="true">📡</span>
-                        <strong id="context-station-name">Loading...</strong>
-                    </span>
+            <!-- Global Error Notification Banner (shown on network/data error) -->
+            <div id="error-banner" class="notice-banner error-banner" style="display: none;" role="alert">
+                <div class="notice-content">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path>
+                        <path d="M12 9v4"></path>
+                        <path d="M12 17h.01"></path>
+                    </svg>
+                    <span id="error-message-text" class="notice-text">Unable to load weather station data. Check server connection and retry.</span>
                 </div>
-                <div class="context-item">
-                    <span class="context-label">Time Window</span>
-                    <span class="context-value context-period-badge" id="context-period-display">
-                        <span class="context-icon" aria-hidden="true">⏱️</span>
-                        <strong id="context-range-label">Last 24 hours</strong>
-                    </span>
-                </div>
-            </div>
-            <div class="context-quick-readings" id="context-quick-readings" aria-label="Current conditions summary">
-                <div class="quick-reading quick-temp" title="Latest Temperature">
-                    <span class="quick-icon" aria-hidden="true">🌡️</span>
-                    <span class="quick-label">Temp</span>
-                    <strong class="quick-val" id="hero-quick-temp">--</strong>
-                </div>
-                <div class="quick-reading quick-hum" title="Latest Humidity">
-                    <span class="quick-icon" aria-hidden="true">💧</span>
-                    <span class="quick-label">Humidity</span>
-                    <strong class="quick-val" id="hero-quick-hum">--</strong>
-                </div>
-                <div class="quick-reading quick-wind" title="Latest Wind Speed">
-                    <span class="quick-icon" aria-hidden="true">💨</span>
-                    <span class="quick-label">Wind</span>
-                    <strong class="quick-val" id="hero-quick-wind">--</strong>
-                </div>
-                <div class="quick-reading quick-dew" title="Latest Dew Point (Calculated)">
-                    <span class="quick-icon" aria-hidden="true">🌫️</span>
-                    <span class="quick-label">Dew Pt (Calc)</span>
-                    <strong class="quick-val" id="hero-quick-dew">--</strong>
-                </div>
-            </div>
-        </section>
-
-        <!-- Global Error Notification Banner (shown on network/data error) -->
-        <div id="error-banner" class="notice-banner error-banner" style="display: none;" role="alert">
-            <div class="notice-content">
-                <span class="notice-icon" aria-hidden="true">⚠️</span>
-                <span id="error-message-text" class="notice-text">Unable to load weather station data. Please check connection.</span>
-            </div>
-            <button type="button" id="btn-retry" class="btn-retry" onclick="refreshAllWithStations()">Retry</button>
-        </div>
-
-        <!-- Controls Toolbar -->
-        <section class="controls-deck controls-section" aria-label="Dashboard controls">
-            <div class="controls-cluster primary-controls">
-                <div class="control-field">
-                    <label for="station-select" class="field-label">Station</label>
-                    <div class="select-wrapper">
-                        <select id="station-select" class="dropdown" title="Select weather station">
-                            <option value="">Loading stations...</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="control-field">
-                    <label for="metric-select" class="field-label">View Mode</label>
-                    <div class="select-wrapper">
-                        <select id="metric-select" class="dropdown" title="Select metric view">
-                            <option value="all" selected>All Panels (Aligned)</option>
-                            <option value="temperature">Temperature (°C)</option>
-                            <option value="humidity">Humidity (%)</option>
-                            <option value="windspeed">Wind Speed (m/s)</option>
-                            <option value="dew_point">Dew Point (°C, Calculated)</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="control-field">
-                    <label for="range-select" class="field-label">Time Range</label>
-                    <div class="select-wrapper">
-                        <select id="range-select" class="dropdown" title="Select time range">
-                            <option value="1h">Last 1 hour</option>
-                            <option value="6h">Last 6 hours</option>
-                            <option value="24h" selected>Last 24 hours</option>
-                            <option value="7d">Last 7 days</option>
-                            <option value="30d">Last 30 days</option>
-                            <option value="all">All History</option>
-                            <option value="limit">Last N Values</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="control-field" id="limit-field" style="display: none;">
-                    <label for="limit-select" class="field-label">Records Limit</label>
-                    <div class="select-wrapper">
-                        <select id="limit-select" class="dropdown" title="Select number of values to display">
-                            <option value="10">10 values</option>
-                            <option value="50" selected>50 values</option>
-                            <option value="100">100 values</option>
-                            <option value="500">500 values</option>
-                            <option value="1000">1000 values</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="control-field view-format-field">
-                    <span class="field-label" id="view-format-label">Display Mode</span>
-                    <div class="segmented-control" role="group" aria-labelledby="view-format-label">
-                        <button type="button" id="btn-view-charts" class="segment-btn active" aria-pressed="true" onclick="setDisplayFormat('chart')">
-                            <span class="segment-icon" aria-hidden="true">📈</span>
-                            <span>Charts</span>
-                        </button>
-                        <button type="button" id="btn-view-table" class="segment-btn" aria-pressed="false" onclick="setDisplayFormat('table')">
-                            <span class="segment-icon" aria-hidden="true">📋</span>
-                            <span>Table</span>
-                        </button>
-                    </div>
-                </div>
+                <button type="button" id="btn-retry" class="btn-retry" onclick="refreshAllWithStations()">Retry connection</button>
             </div>
 
-            <div class="controls-cluster secondary-controls">
-                <div class="toggle-group">
-                    <label class="toggle-label modern-switch" title="Toggle visibility of raw telemetry readings">
-                        <input type="checkbox" id="toggleRaw" checked>
-                        <span class="switch-slider" aria-hidden="true"></span>
-                        <span class="switch-text">Raw readings</span>
-                    </label>
-                    <label class="toggle-label modern-switch" title="Toggle visibility of rolling average line">
-                        <input type="checkbox" id="toggleRolling" checked>
-                        <span class="switch-slider" aria-hidden="true"></span>
-                        <span class="switch-text">Rolling avg</span>
-                    </label>
-                </div>
-                <div class="control-field window-field">
-                    <label for="rollingWindow" class="field-label">Window</label>
-                    <div class="select-wrapper">
-                        <select id="rollingWindow" class="dropdown dropdown-compact" title="Rolling average window size">
-                            <option value="3">Window: 3</option>
-                            <option value="5">Window: 5</option>
-                            <option value="10" selected>Window: 10</option>
-                            <option value="20">Window: 20</option>
-                            <option value="30">Window: 30</option>
-                        </select>
+            <!-- Instrument Control Bar & Integrated Telemetry Metadata -->
+            <section class="controls-deck controls-section" aria-label="Dashboard controls">
+                <div class="controls-cluster primary-controls">
+                    <div class="control-field">
+                        <label for="station-select" class="field-label">Station</label>
+                        <div class="select-wrapper">
+                            <select id="station-select" class="dropdown" title="Select weather station">
+                                <option value="">Loading stations...</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="control-field">
+                        <label for="metric-select" class="field-label">Channel view</label>
+                        <div class="select-wrapper">
+                            <select id="metric-select" class="dropdown" title="Select metric view">
+                                <option value="all" selected>All channels (synchronized)</option>
+                                <option value="temperature">Temperature (°C)</option>
+                                <option value="humidity">Relative humidity (%)</option>
+                                <option value="windspeed">Wind velocity (m/s)</option>
+                                <option value="dew_point">Dew point (°C, derived)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="control-field">
+                        <label for="range-select" class="field-label">Time window</label>
+                        <div class="select-wrapper">
+                            <select id="range-select" class="dropdown" title="Select time range">
+                                <option value="1h">Last 1 hour</option>
+                                <option value="6h">Last 6 hours</option>
+                                <option value="24h" selected>Last 24 hours</option>
+                                <option value="7d">Last 7 days</option>
+                                <option value="30d">Last 30 days</option>
+                                <option value="all">Full archive</option>
+                                <option value="limit">Latest N samples</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="control-field" id="limit-field" style="display: none;">
+                        <label for="limit-select" class="field-label">Sample count</label>
+                        <div class="select-wrapper">
+                            <select id="limit-select" class="dropdown" title="Select number of values to display">
+                                <option value="10">10 samples</option>
+                                <option value="50" selected>50 samples</option>
+                                <option value="100">100 samples</option>
+                                <option value="500">500 samples</option>
+                                <option value="1000">1000 samples</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="control-field view-format-field">
+                        <span class="field-label" id="view-format-label">Presentation</span>
+                        <div class="segmented-control" role="group" aria-labelledby="view-format-label">
+                            <button type="button" id="btn-view-charts" class="segment-btn active" aria-pressed="true" onclick="setDisplayFormat('chart')">
+                                <span>Waveforms</span>
+                            </button>
+                            <button type="button" id="btn-view-table" class="segment-btn" aria-pressed="false" onclick="setDisplayFormat('table')">
+                                <span>Log table</span>
+                            </button>
+                        </div>
                     </div>
                 </div>
-            </div>
-        </section>
 
-        <!-- Data Info & Quality Bar -->
-        <div id="data-meta-bar" class="meta-bar" aria-label="Data telemetry metadata">
-            <span id="meta-points-count" class="meta-chip">
-                <span class="chip-icon" aria-hidden="true">📊</span>
-                <span class="chip-text">Loading data...</span>
-            </span>
-            <span id="meta-loading" class="meta-chip meta-chip-loading" style="display: none;" role="status" aria-live="polite">
-                <span class="spinner-inline" aria-hidden="true"></span>
-                <span class="chip-text">Updating...</span>
-            </span>
-            <span id="meta-aggregation" class="meta-chip meta-chip-info" style="display: none;">
-                <span class="chip-icon" aria-hidden="true">⚡</span>
-                <span class="chip-text">Aggregated (Peaks/Troughs Preserved)</span>
-            </span>
-            <span id="meta-gaps" class="meta-chip meta-chip-warning" style="display: none;">
-                <span class="chip-icon" aria-hidden="true">⚠️</span>
-                <span class="chip-text">Missing data gaps detected</span>
-            </span>
-        </div>
+                <div class="controls-cluster secondary-controls">
+                    <div class="toggle-group">
+                        <label class="toggle-label modern-switch" title="Toggle visibility of raw telemetry readings">
+                            <input type="checkbox" id="toggleRaw" checked>
+                            <span class="switch-slider" aria-hidden="true"></span>
+                            <span class="switch-text">Raw trace</span>
+                        </label>
+                        <label class="toggle-label modern-switch" title="Toggle visibility of rolling average line">
+                            <input type="checkbox" id="toggleRolling" checked>
+                            <span class="switch-slider" aria-hidden="true"></span>
+                            <span class="switch-text">Rolling mean</span>
+                        </label>
+                    </div>
+                    <div class="control-field window-field">
+                        <label for="rollingWindow" class="field-label">Smoothing</label>
+                        <div class="select-wrapper">
+                            <select id="rollingWindow" class="dropdown dropdown-compact" title="Rolling average window size">
+                                <option value="3">3 samples</option>
+                                <option value="5">5 samples</option>
+                                <option value="10" selected>10 samples</option>
+                                <option value="20">20 samples</option>
+                                <option value="30">30 samples</option>
+                            </select>
+                        </div>
+                    </div>
 
-        <!-- Global Empty State (no stations at all in database) -->
-        <div id="empty-state" class="empty-state" style="display: none;" role="region" aria-label="No stations available">
-            <div class="empty-state-graphic" aria-hidden="true">📡</div>
-            <h2 class="empty-state-title">No Weather Data Available</h2>
-            <p class="empty-state-text">No stations or telemetry readings were found in the database.</p>
-            <p class="empty-state-hint">Start a station client or seed demo readings to begin live monitoring.</p>
-            <button type="button" class="btn-refresh-empty" onclick="refreshAllWithStations()">Check Again</button>
-        </div>
+                    <!-- Integrated Telemetry Metadata & Signal Diagnostics -->
+                    <div id="data-meta-bar" class="meta-bar" aria-label="Data telemetry metadata">
+                        <span id="meta-points-count" class="meta-chip">Loading...</span>
+                        <span id="meta-loading" class="meta-chip meta-chip-loading" style="display: none;" role="status" aria-live="polite">
+                            <span class="spinner-inline" aria-hidden="true"></span>
+                            <span class="chip-text">Syncing</span>
+                        </span>
+                        <span id="meta-aggregation" class="meta-chip meta-chip-info" style="display: none;">Peak/trough preserved</span>
+                        <span id="meta-gaps" class="meta-chip meta-chip-warning" style="display: none;">Data gaps present</span>
+                    </div>
+                </div>
+            </section>
 
-        <!-- Station-Specific Empty State (station exists, but no data in chosen time range) -->
-        <div id="station-empty-state" class="empty-state station-empty" style="display: none;" role="region" aria-label="No data for selected time range">
-            <div class="empty-state-graphic" aria-hidden="true">📊</div>
-            <h2 class="empty-state-title" id="station-empty-title">No Telemetry In This Window</h2>
-            <p class="empty-state-text" id="station-empty-text">No readings found for the selected station in this time range.</p>
-            <div class="empty-actions">
-                <button type="button" class="btn-action-primary" onclick="setRangeAndRefresh('all')">View All History</button>
-                <button type="button" class="btn-action-secondary" onclick="setRangeAndRefresh('30d')">View Last 30 Days</button>
-                <button type="button" class="btn-action-outline" onclick="refreshAll()">Check Again</button>
+            <!-- Global Empty State (no stations at all in database) -->
+            <div id="empty-state" class="empty-state" style="display: none;" role="region" aria-label="No stations available">
+                <div class="empty-state-graphic" aria-hidden="true">
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"></path>
+                        <path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"></path>
+                        <circle cx="12" cy="12" r="2"></circle>
+                        <path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"></path>
+                        <path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"></path>
+                    </svg>
+                </div>
+                <h2 class="empty-state-title">No station telemetry recorded</h2>
+                <p class="empty-state-text">The database contains no active stations or sensor observations.</p>
+                <p class="empty-state-hint">Start a station transmitter or run the demo seed script to begin recording.</p>
+                <button type="button" class="btn-refresh-empty" onclick="refreshAllWithStations()">Check for stations</button>
             </div>
-        </div>
 
-        <!-- Single Metric Stats Cards -->
-        <section id="stats-container" class="stats-grid" style="display: none;" aria-label="Metric statistics">
-            <div class="stat-card">
-                <div class="stat-header">
-                    <span class="stat-icon" aria-hidden="true">📍</span>
-                    <span class="stat-label">Latest Reading</span>
-                </div>
-                <div class="stat-value" id="stat-latest">--</div>
-                <div class="stat-time" id="stat-latest-time">--</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-header">
-                    <span class="stat-icon" aria-hidden="true">📊</span>
-                    <span class="stat-label">Sample Average</span>
-                </div>
-                <div class="stat-value" id="stat-avg">--</div>
-                <div class="stat-footnote">Arithmetic mean of samples</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-header">
-                    <span class="stat-icon" aria-hidden="true">⏱️</span>
-                    <span class="stat-label">Time-Weighted Avg</span>
-                </div>
-                <div class="stat-value" id="stat-twa">--</div>
-                <div class="stat-footnote">Trapezoidal time-integral</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-header">
-                    <span class="stat-icon" aria-hidden="true">📉</span>
-                    <span class="stat-label">Period Minimum</span>
-                </div>
-                <div class="stat-value" id="stat-min">--</div>
-                <div class="stat-footnote">Lowest recorded value</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-header">
-                    <span class="stat-icon" aria-hidden="true">📈</span>
-                    <span class="stat-label">Period Maximum</span>
-                </div>
-                <div class="stat-value" id="stat-max">--</div>
-                <div class="stat-footnote">Highest recorded value</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-header">
-                    <span class="stat-icon" aria-hidden="true">🔢</span>
-                    <span class="stat-label">Sample Count</span>
-                </div>
-                <div class="stat-value" id="stat-count">--</div>
-                <div class="stat-footnote">Valid readings in window</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-header">
-                    <span class="stat-icon" aria-hidden="true">⏳</span>
-                    <span class="stat-label">Reading Age</span>
-                </div>
-                <div class="stat-value" id="stat-age">--</div>
-                <div class="stat-footnote">Time elapsed since reading</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-header">
-                    <span class="stat-icon" aria-hidden="true">🔄</span>
-                    <span class="stat-label">Period Change</span>
-                </div>
-                <div class="stat-value" id="stat-change">--</div>
-                <div class="stat-footnote" id="stat-change-footnote">vs preceding equal period</div>
-            </div>
-        </section>
-
-        <!-- Multi-metric Overview Cards (for All Panels view) -->
-        <section id="multi-stats-container" class="multi-stats-grid" aria-label="Current conditions across metrics">
-            <div class="stat-card temp-card">
-                <div class="stat-header">
-                    <span class="stat-icon" aria-hidden="true">🌡️</span>
-                    <span class="stat-label">Temperature</span>
-                    <span class="stat-unit-tag">°C</span>
-                </div>
-                <div class="stat-value" id="stat-temp-latest">--</div>
-                <div class="stat-subvalues">
-                    <div class="subvalue-col">
-                        <span class="subvalue-label">Sample Avg</span>
-                        <strong class="subvalue-number" id="stat-temp-avg">--</strong>
-                    </div>
-                    <div class="subvalue-col">
-                        <span class="subvalue-label">Time-Weighted</span>
-                        <strong class="subvalue-number" id="stat-temp-twa">--</strong>
-                    </div>
-                    <div class="subvalue-col">
-                        <span class="subvalue-label">Min / Max</span>
-                        <strong class="subvalue-number"><span id="stat-temp-min">--</span> / <span id="stat-temp-max">--</span></strong>
-                    </div>
-                    <div class="subvalue-col">
-                        <span class="subvalue-label">Samples / Age</span>
-                        <strong class="subvalue-number"><span id="stat-temp-count">--</span> (<span id="stat-temp-age">--</span>)</strong>
-                    </div>
-                    <div class="subvalue-col subvalue-full">
-                        <span class="subvalue-label">Change vs Prev Period</span>
-                        <strong class="subvalue-number" id="stat-temp-change">--</strong>
-                    </div>
-                </div>
-            </div>
-            <div class="stat-card hum-card">
-                <div class="stat-header">
-                    <span class="stat-icon" aria-hidden="true">💧</span>
-                    <span class="stat-label">Humidity</span>
-                    <span class="stat-unit-tag">%</span>
-                </div>
-                <div class="stat-value" id="stat-hum-latest">--</div>
-                <div class="stat-subvalues">
-                    <div class="subvalue-col">
-                        <span class="subvalue-label">Sample Avg</span>
-                        <strong class="subvalue-number" id="stat-hum-avg">--</strong>
-                    </div>
-                    <div class="subvalue-col">
-                        <span class="subvalue-label">Time-Weighted</span>
-                        <strong class="subvalue-number" id="stat-hum-twa">--</strong>
-                    </div>
-                    <div class="subvalue-col">
-                        <span class="subvalue-label">Min / Max</span>
-                        <strong class="subvalue-number"><span id="stat-hum-min">--</span> / <span id="stat-hum-max">--</span></strong>
-                    </div>
-                    <div class="subvalue-col">
-                        <span class="subvalue-label">Samples / Age</span>
-                        <strong class="subvalue-number"><span id="stat-hum-count">--</span> (<span id="stat-hum-age">--</span>)</strong>
-                    </div>
-                    <div class="subvalue-col subvalue-full">
-                        <span class="subvalue-label">Change vs Prev Period</span>
-                        <strong class="subvalue-number" id="stat-hum-change">--</strong>
-                    </div>
-                </div>
-            </div>
-            <div class="stat-card wind-card">
-                <div class="stat-header">
-                    <span class="stat-icon" aria-hidden="true">💨</span>
-                    <span class="stat-label">Wind Speed</span>
-                    <span class="stat-unit-tag">m/s</span>
-                </div>
-                <div class="stat-value" id="stat-wind-latest">--</div>
-                <div class="stat-subvalues">
-                    <div class="subvalue-col">
-                        <span class="subvalue-label">Sample Avg</span>
-                        <strong class="subvalue-number" id="stat-wind-avg">--</strong>
-                    </div>
-                    <div class="subvalue-col">
-                        <span class="subvalue-label">Time-Weighted</span>
-                        <strong class="subvalue-number" id="stat-wind-twa">--</strong>
-                    </div>
-                    <div class="subvalue-col">
-                        <span class="subvalue-label">Min / Max</span>
-                        <strong class="subvalue-number"><span id="stat-wind-min">--</span> / <span id="stat-wind-max">--</span></strong>
-                    </div>
-                    <div class="subvalue-col">
-                        <span class="subvalue-label">Samples / Age</span>
-                        <strong class="subvalue-number"><span id="stat-wind-count">--</span> (<span id="stat-wind-age">--</span>)</strong>
-                    </div>
-                    <div class="subvalue-col subvalue-full">
-                        <span class="subvalue-label">Change vs Prev Period</span>
-                        <strong class="subvalue-number" id="stat-wind-change">--</strong>
-                    </div>
-                </div>
-            </div>
-            <div class="stat-card dew-card">
-                <div class="stat-header">
-                    <span class="stat-icon" aria-hidden="true">🌫️</span>
-                    <span class="stat-label">Dew Point</span>
-                    <span class="stat-unit-tag">°C</span>
-                    <span class="stat-calc-badge" title="Derived using Magnus-Tetens formula from paired temperature and humidity">Calculated</span>
-                </div>
-                <div class="stat-value" id="stat-dew-latest">--</div>
-                <div class="stat-subvalues">
-                    <div class="subvalue-col">
-                        <span class="subvalue-label">Sample Avg</span>
-                        <strong class="subvalue-number" id="stat-dew-avg">--</strong>
-                    </div>
-                    <div class="subvalue-col">
-                        <span class="subvalue-label">Time-Weighted</span>
-                        <strong class="subvalue-number" id="stat-dew-twa">--</strong>
-                    </div>
-                    <div class="subvalue-col">
-                        <span class="subvalue-label">Min / Max</span>
-                        <strong class="subvalue-number"><span id="stat-dew-min">--</span> / <span id="stat-dew-max">--</span></strong>
-                    </div>
-                    <div class="subvalue-col">
-                        <span class="subvalue-label">Samples / Age</span>
-                        <strong class="subvalue-number"><span id="stat-dew-count">--</span> (<span id="stat-dew-age">--</span>)</strong>
-                    </div>
-                    <div class="subvalue-col subvalue-full">
-                        <span class="subvalue-label">Change vs Prev Period</span>
-                        <strong class="subvalue-number" id="stat-dew-change">--</strong>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Aligned Multi-Panel Layout -->
-        <section id="multi-panels-container" class="multi-panels-section" aria-label="Synchronized telemetry charts">
-            <div class="panel-card" id="panel-temperature">
-                <div class="panel-header">
-                    <div class="panel-title">
-                        <span class="panel-dot temp-dot" aria-hidden="true"></span>
-                        <span class="panel-name">Temperature</span>
-                        <span class="unit-badge">°C</span>
-                    </div>
-                    <div class="panel-mini-stats" id="mini-stats-temperature">
-                        <span class="mini-stat-item"><span class="mini-stat-label">Latest:</span> <strong id="mini-temp-latest">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Sample Avg:</span> <strong id="mini-temp-avg">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">TWA:</span> <strong id="mini-temp-twa">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Min:</span> <strong id="mini-temp-min">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Max:</span> <strong id="mini-temp-max">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Change:</span> <strong id="mini-temp-change">--</strong></span>
-                    </div>
-                </div>
-                <div class="panel-chart-wrapper">
-                    <canvas id="chart-temperature"></canvas>
+            <!-- Station-Specific Empty State (station exists, but no data in chosen time range) -->
+            <div id="station-empty-state" class="empty-state station-empty" style="display: none;" role="region" aria-label="No data for selected time range">
+                <h2 class="empty-state-title" id="station-empty-title">No observations in this time window</h2>
+                <p class="empty-state-text" id="station-empty-text">No sensor readings were recorded for the selected station during this period.</p>
+                <div class="empty-actions">
+                    <button type="button" class="btn-action-primary" onclick="setRangeAndRefresh('all')">Load full archive</button>
+                    <button type="button" class="btn-action-secondary" onclick="setRangeAndRefresh('30d')">Expand to 30 days</button>
+                    <button type="button" class="btn-action-outline" onclick="refreshAll()">Refresh window</button>
                 </div>
             </div>
 
-            <div class="panel-card" id="panel-humidity">
-                <div class="panel-header">
-                    <div class="panel-title">
-                        <span class="panel-dot hum-dot" aria-hidden="true"></span>
-                        <span class="panel-name">Humidity</span>
-                        <span class="unit-badge">%</span>
+            <!-- Single-Channel Detailed Statistics Strip -->
+            <section id="stats-container" class="stats-grid single-stats-strip" style="display: none;" aria-label="Metric statistics">
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-label">Latest reading</span>
                     </div>
-                    <div class="panel-mini-stats" id="mini-stats-humidity">
-                        <span class="mini-stat-item"><span class="mini-stat-label">Latest:</span> <strong id="mini-hum-latest">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Sample Avg:</span> <strong id="mini-hum-avg">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">TWA:</span> <strong id="mini-hum-twa">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Min:</span> <strong id="mini-hum-min">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Max:</span> <strong id="mini-hum-max">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Change:</span> <strong id="mini-hum-change">--</strong></span>
+                    <div class="stat-value" id="stat-latest">--</div>
+                    <div class="stat-time" id="stat-latest-time">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-label">Sample mean</span>
                     </div>
+                    <div class="stat-value" id="stat-avg">--</div>
+                    <div class="stat-footnote">Arithmetic mean of observations</div>
                 </div>
-                <div class="panel-chart-wrapper">
-                    <canvas id="chart-humidity"></canvas>
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-label">Time-weighted mean</span>
+                    </div>
+                    <div class="stat-value" id="stat-twa">--</div>
+                    <div class="stat-footnote">Trapezoidal time integral</div>
                 </div>
-            </div>
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-label">Window minimum</span>
+                    </div>
+                    <div class="stat-value" id="stat-min">--</div>
+                    <div class="stat-footnote">Lowest observed value</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-label">Window maximum</span>
+                    </div>
+                    <div class="stat-value" id="stat-max">--</div>
+                    <div class="stat-footnote">Highest observed value</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-label">Observation count</span>
+                    </div>
+                    <div class="stat-value" id="stat-count">--</div>
+                    <div class="stat-footnote">Valid samples in window</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-label">Observation age</span>
+                    </div>
+                    <div class="stat-value" id="stat-age">--</div>
+                    <div class="stat-footnote">Elapsed since latest sample</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-label">Period delta</span>
+                    </div>
+                    <div class="stat-value" id="stat-change">--</div>
+                    <div class="stat-footnote" id="stat-change-footnote">vs preceding equal period</div>
+                </div>
+            </section>
 
-            <div class="panel-card" id="panel-windspeed">
-                <div class="panel-header">
-                    <div class="panel-title">
-                        <span class="panel-dot wind-dot" aria-hidden="true"></span>
-                        <span class="panel-name">Wind Speed</span>
-                        <span class="unit-badge">m/s</span>
+            <!-- Synoptic Instrument Readout Bays (All Channels View) -->
+            <section id="multi-stats-container" class="multi-stats-grid" aria-label="Current conditions across metrics">
+                <article class="stat-card temp-card">
+                    <div class="stat-top-row">
+                        <div class="stat-header">
+                            <span class="channel-pip temp-pip" aria-hidden="true"></span>
+                            <span class="stat-label">Air temperature</span>
+                            <span class="stat-unit-tag">°C</span>
+                        </div>
+                        <div class="stat-value" id="stat-temp-latest">--</div>
                     </div>
-                    <div class="panel-mini-stats" id="mini-stats-windspeed">
-                        <span class="mini-stat-item"><span class="mini-stat-label">Latest:</span> <strong id="mini-wind-latest">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Sample Avg:</span> <strong id="mini-wind-avg">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">TWA:</span> <strong id="mini-wind-twa">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Min:</span> <strong id="mini-wind-min">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Max:</span> <strong id="mini-wind-max">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Change:</span> <strong id="mini-wind-change">--</strong></span>
-                    </div>
-                </div>
-                <div class="panel-chart-wrapper">
-                    <canvas id="chart-windspeed"></canvas>
-                </div>
-            </div>
+                    <dl class="stat-subvalues">
+                        <div class="subvalue-row">
+                            <dt class="subvalue-label">Sample / TWA</dt>
+                            <dd class="subvalue-number"><span id="stat-temp-avg">--</span> <span class="subvalue-sep">/</span> <span id="stat-temp-twa">--</span></dd>
+                        </div>
+                        <div class="subvalue-row">
+                            <dt class="subvalue-label">Window span</dt>
+                            <dd class="subvalue-number"><span id="stat-temp-min">--</span> <span class="subvalue-sep">to</span> <span id="stat-temp-max">--</span></dd>
+                        </div>
+                        <div class="subvalue-row">
+                            <dt class="subvalue-label">Samples &amp; age</dt>
+                            <dd class="subvalue-number"><span id="stat-temp-count">--</span> <span class="subvalue-muted">(<span id="stat-temp-age">--</span>)</span></dd>
+                        </div>
+                        <div class="subvalue-row">
+                            <dt class="subvalue-label">Period delta</dt>
+                            <dd class="subvalue-number" id="stat-temp-change">--</dd>
+                        </div>
+                    </dl>
+                </article>
 
-            <div class="panel-card" id="panel-dewpoint">
-                <div class="panel-header">
-                    <div class="panel-title">
-                        <span class="panel-dot dew-dot" aria-hidden="true"></span>
-                        <span class="panel-name">Dew Point</span>
-                        <span class="unit-badge">°C</span>
-                        <span class="stat-calc-badge calc-tag" title="Calculated using Magnus-Tetens formula">Calculated</span>
+                <article class="stat-card hum-card">
+                    <div class="stat-top-row">
+                        <div class="stat-header">
+                            <span class="channel-pip hum-pip" aria-hidden="true"></span>
+                            <span class="stat-label">Relative humidity</span>
+                            <span class="stat-unit-tag">%</span>
+                        </div>
+                        <div class="stat-value" id="stat-hum-latest">--</div>
                     </div>
-                    <div class="panel-mini-stats" id="mini-stats-dewpoint">
-                        <span class="mini-stat-item"><span class="mini-stat-label">Latest:</span> <strong id="mini-dew-latest">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Sample Avg:</span> <strong id="mini-dew-avg">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">TWA:</span> <strong id="mini-dew-twa">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Min:</span> <strong id="mini-dew-min">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Max:</span> <strong id="mini-dew-max">--</strong></span>
-                        <span class="mini-stat-item"><span class="mini-stat-label">Change:</span> <strong id="mini-dew-change">--</strong></span>
-                    </div>
-                </div>
-                <div class="panel-chart-wrapper">
-                    <canvas id="chart-dewpoint"></canvas>
-                </div>
-            </div>
-        </section>
+                    <dl class="stat-subvalues">
+                        <div class="subvalue-row">
+                            <dt class="subvalue-label">Sample / TWA</dt>
+                            <dd class="subvalue-number"><span id="stat-hum-avg">--</span> <span class="subvalue-sep">/</span> <span id="stat-hum-twa">--</span></dd>
+                        </div>
+                        <div class="subvalue-row">
+                            <dt class="subvalue-label">Window span</dt>
+                            <dd class="subvalue-number"><span id="stat-hum-min">--</span> <span class="subvalue-sep">to</span> <span id="stat-hum-max">--</span></dd>
+                        </div>
+                        <div class="subvalue-row">
+                            <dt class="subvalue-label">Samples &amp; age</dt>
+                            <dd class="subvalue-number"><span id="stat-hum-count">--</span> <span class="subvalue-muted">(<span id="stat-hum-age">--</span>)</span></dd>
+                        </div>
+                        <div class="subvalue-row">
+                            <dt class="subvalue-label">Period delta</dt>
+                            <dd class="subvalue-number" id="stat-hum-change">--</dd>
+                        </div>
+                    </dl>
+                </article>
 
-        <!-- Single Chart (for focused single-metric mode) -->
-        <section id="chart-container" class="chart-section" style="display: none;" aria-label="Single metric detailed chart">
-            <div class="loading" id="chart-loading">
-                <div class="loading-spinner" aria-hidden="true"></div>
-                <span>Loading telemetry chart...</span>
-            </div>
-            <canvas id="data-chart" style="display: none;"></canvas>
-        </section>
+                <article class="stat-card wind-card">
+                    <div class="stat-top-row">
+                        <div class="stat-header">
+                            <span class="channel-pip wind-pip" aria-hidden="true"></span>
+                            <span class="stat-label">Wind velocity</span>
+                            <span class="stat-unit-tag">m/s</span>
+                        </div>
+                        <div class="stat-value" id="stat-wind-latest">--</div>
+                    </div>
+                    <dl class="stat-subvalues">
+                        <div class="subvalue-row">
+                            <dt class="subvalue-label">Sample / TWA</dt>
+                            <dd class="subvalue-number"><span id="stat-wind-avg">--</span> <span class="subvalue-sep">/</span> <span id="stat-wind-twa">--</span></dd>
+                        </div>
+                        <div class="subvalue-row">
+                            <dt class="subvalue-label">Window span</dt>
+                            <dd class="subvalue-number"><span id="stat-wind-min">--</span> <span class="subvalue-sep">to</span> <span id="stat-wind-max">--</span></dd>
+                        </div>
+                        <div class="subvalue-row">
+                            <dt class="subvalue-label">Samples &amp; age</dt>
+                            <dd class="subvalue-number"><span id="stat-wind-count">--</span> <span class="subvalue-muted">(<span id="stat-wind-age">--</span>)</span></dd>
+                        </div>
+                        <div class="subvalue-row">
+                            <dt class="subvalue-label">Period delta</dt>
+                            <dd class="subvalue-number" id="stat-wind-change">--</dd>
+                        </div>
+                    </dl>
+                </article>
 
-        <!-- Accessible Telemetry Table Alternative -->
-        <section id="table-container" class="table-section" style="display: none;" aria-label="Accessible telemetry data table">
-            <div class="table-card">
-                <div class="table-toolbar">
-                    <div class="table-toolbar-info">
-                        <h2 class="table-title">Telemetry Data Records</h2>
-                        <span id="table-caption-summary" class="table-summary-chip">0 records</span>
+                <article class="stat-card dew-card">
+                    <div class="stat-top-row">
+                        <div class="stat-header">
+                            <span class="channel-pip dew-pip" aria-hidden="true"></span>
+                            <span class="stat-label">Dew point</span>
+                            <span class="stat-unit-tag">°C</span>
+                            <span class="stat-calc-badge" title="Derived using Magnus-Tetens formula from paired temperature and humidity">Derived</span>
+                        </div>
+                        <div class="stat-value" id="stat-dew-latest">--</div>
                     </div>
-                    <div class="table-toolbar-actions">
-                        <button type="button" id="btn-copy-csv" class="btn-table-action" onclick="copyTableAsCsv()" title="Copy tabular data as CSV" aria-label="Copy table data as CSV">
-                            <span aria-hidden="true">📋</span> Copy CSV
-                        </button>
+                    <dl class="stat-subvalues">
+                        <div class="subvalue-row">
+                            <dt class="subvalue-label">Sample / TWA</dt>
+                            <dd class="subvalue-number"><span id="stat-dew-avg">--</span> <span class="subvalue-sep">/</span> <span id="stat-dew-twa">--</span></dd>
+                        </div>
+                        <div class="subvalue-row">
+                            <dt class="subvalue-label">Window span</dt>
+                            <dd class="subvalue-number"><span id="stat-dew-min">--</span> <span class="subvalue-sep">to</span> <span id="stat-dew-max">--</span></dd>
+                        </div>
+                        <div class="subvalue-row">
+                            <dt class="subvalue-label">Samples &amp; age</dt>
+                            <dd class="subvalue-number"><span id="stat-dew-count">--</span> <span class="subvalue-muted">(<span id="stat-dew-age">--</span>)</span></dd>
+                        </div>
+                        <div class="subvalue-row">
+                            <dt class="subvalue-label">Period delta</dt>
+                            <dd class="subvalue-number" id="stat-dew-change">--</dd>
+                        </div>
+                    </dl>
+                </article>
+            </section>
+
+            <!-- 2x2 Synchronized Barograph Matrix -->
+            <section id="multi-panels-container" class="multi-panels-section" aria-label="Synchronized telemetry charts">
+                <div class="panel-card" id="panel-temperature">
+                    <div class="panel-header">
+                        <div class="panel-title">
+                            <span class="panel-dot temp-dot" aria-hidden="true"></span>
+                            <span class="panel-name">Air temperature</span>
+                            <span class="unit-badge">°C</span>
+                        </div>
+                        <div class="panel-mini-stats" id="mini-stats-temperature">
+                            <span class="mini-stat-item"><span class="mini-stat-label">Now</span> <strong id="mini-temp-latest">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">Mean</span> <strong id="mini-temp-avg">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">TWA</span> <strong id="mini-temp-twa">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">Min</span> <strong id="mini-temp-min">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">Max</span> <strong id="mini-temp-max">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">Δ</span> <strong id="mini-temp-change">--</strong></span>
+                        </div>
+                    </div>
+                    <div class="panel-chart-wrapper">
+                        <canvas id="chart-temperature"></canvas>
                     </div>
                 </div>
-                <div class="table-responsive-wrapper" tabindex="0" role="region" aria-label="Telemetry records data table, scrollable">
-                    <table class="data-table" id="telemetry-data-table">
-                        <caption id="table-accessible-caption" class="sr-only">Weather station telemetry records table</caption>
-                        <thead id="table-head">
-                            <tr id="table-head-row">
-                                <th scope="col">Timestamp (UTC)</th>
-                                <th scope="col">Value</th>
-                            </tr>
-                        </thead>
-                        <tbody id="table-body">
-                        </tbody>
-                    </table>
+
+                <div class="panel-card" id="panel-humidity">
+                    <div class="panel-header">
+                        <div class="panel-title">
+                            <span class="panel-dot hum-dot" aria-hidden="true"></span>
+                            <span class="panel-name">Relative humidity</span>
+                            <span class="unit-badge">%</span>
+                        </div>
+                        <div class="panel-mini-stats" id="mini-stats-humidity">
+                            <span class="mini-stat-item"><span class="mini-stat-label">Now</span> <strong id="mini-hum-latest">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">Mean</span> <strong id="mini-hum-avg">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">TWA</span> <strong id="mini-hum-twa">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">Min</span> <strong id="mini-hum-min">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">Max</span> <strong id="mini-hum-max">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">Δ</span> <strong id="mini-hum-change">--</strong></span>
+                        </div>
+                    </div>
+                    <div class="panel-chart-wrapper">
+                        <canvas id="chart-humidity"></canvas>
+                    </div>
                 </div>
-                <div class="table-footer-status">
-                    <span id="table-footer-note" class="table-footer-text">Displaying telemetry readings in chronological order.</span>
+
+                <div class="panel-card" id="panel-windspeed">
+                    <div class="panel-header">
+                        <div class="panel-title">
+                            <span class="panel-dot wind-dot" aria-hidden="true"></span>
+                            <span class="panel-name">Wind velocity</span>
+                            <span class="unit-badge">m/s</span>
+                        </div>
+                        <div class="panel-mini-stats" id="mini-stats-windspeed">
+                            <span class="mini-stat-item"><span class="mini-stat-label">Now</span> <strong id="mini-wind-latest">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">Mean</span> <strong id="mini-wind-avg">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">TWA</span> <strong id="mini-wind-twa">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">Min</span> <strong id="mini-wind-min">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">Max</span> <strong id="mini-wind-max">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">Δ</span> <strong id="mini-wind-change">--</strong></span>
+                        </div>
+                    </div>
+                    <div class="panel-chart-wrapper">
+                        <canvas id="chart-windspeed"></canvas>
+                    </div>
                 </div>
-            </div>
-        </section>
+
+                <div class="panel-card" id="panel-dewpoint">
+                    <div class="panel-header">
+                        <div class="panel-title">
+                            <span class="panel-dot dew-dot" aria-hidden="true"></span>
+                            <span class="panel-name">Dew point</span>
+                            <span class="unit-badge">°C</span>
+                            <span class="stat-calc-badge calc-tag" title="Calculated using Magnus-Tetens formula">Derived</span>
+                        </div>
+                        <div class="panel-mini-stats" id="mini-stats-dewpoint">
+                            <span class="mini-stat-item"><span class="mini-stat-label">Now</span> <strong id="mini-dew-latest">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">Mean</span> <strong id="mini-dew-avg">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">TWA</span> <strong id="mini-dew-twa">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">Min</span> <strong id="mini-dew-min">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">Max</span> <strong id="mini-dew-max">--</strong></span>
+                            <span class="mini-stat-item"><span class="mini-stat-label">Δ</span> <strong id="mini-dew-change">--</strong></span>
+                        </div>
+                    </div>
+                    <div class="panel-chart-wrapper">
+                        <canvas id="chart-dewpoint"></canvas>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Single-Channel Detailed Barograph View -->
+            <section id="chart-container" class="chart-section" style="display: none;" aria-label="Single metric detailed chart">
+                <div class="loading" id="chart-loading">
+                    <div class="loading-spinner" aria-hidden="true"></div>
+                    <span>Rendering waveform...</span>
+                </div>
+                <canvas id="data-chart" style="display: none;"></canvas>
+            </section>
+
+            <!-- Accessible Telemetry Log Table -->
+            <section id="table-container" class="table-section" style="display: none;" aria-label="Accessible telemetry data table">
+                <div class="table-card">
+                    <div class="table-toolbar">
+                        <div class="table-toolbar-info">
+                            <h2 class="table-title">Chronological telemetry log</h2>
+                            <span id="table-caption-summary" class="table-summary-chip">0 records</span>
+                        </div>
+                        <div class="table-toolbar-actions">
+                            <button type="button" id="btn-copy-csv" class="btn-table-action" onclick="copyTableAsCsv()" title="Copy tabular data as CSV" aria-label="Copy table data as CSV">
+                                Copy CSV
+                            </button>
+                        </div>
+                    </div>
+                    <div class="table-responsive-wrapper" tabindex="0" role="region" aria-label="Telemetry records data table, scrollable">
+                        <table class="data-table" id="telemetry-data-table">
+                            <caption id="table-accessible-caption" class="sr-only">Weather station telemetry records table</caption>
+                            <thead id="table-head">
+                                <tr id="table-head-row">
+                                    <th scope="col">Timestamp (UTC)</th>
+                                    <th scope="col">Value</th>
+                                </tr>
+                            </thead>
+                            <tbody id="table-body">
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="table-footer-status">
+                        <span id="table-footer-note" class="table-footer-text">Observations ordered chronologically in coordinated universal time (UTC).</span>
+                    </div>
+                </div>
+            </section>
         </main>
     </div>
 

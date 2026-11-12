@@ -995,4 +995,4 @@ if __name__ == "__main__":
         logger.info(f"Using wind column name: {wind_col}")
         init_db_indexes()
 
-    app.run(host=WEB_HOST, port=WEB_PORT, debug=False, use_reloader=False)
+    app.run(host=WEB_HOST, port=WEB_PORT, debug=False, use_reloader=False, threaded=True)
