@@ -24,7 +24,7 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["consumer_client", "scripts", ".venv", "docs"]
-pythonpath = ["server", "web", "station_client"]
+pythonpath = ["server", "web", "station_client", "scripts"]
 asyncio_mode = "auto"
 addopts = "--cov=protocol --cov=web --cov=app --cov=client --cov=metrics --cov-report=term-missing"
 filterwarnings = [

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 # Protocol limits
 MAX_LINE_SIZE = 65536  # Maximum size of a single line (bytes)
 MAX_BATCH_SIZE = 50    # Maximum number of readings per batch
+MAX_SEQ = 2**63 - 1    # Largest seq SQLite can store (signed 64-bit INTEGER)
 
 # Valid ranges for weather measurements
 TEMPERATURE_MIN = -10
@@ -120,6 +121,8 @@ def validate_batch(batch: list) -> None:
         # Rule 5b: seq must be a non-negative integer
         if not isinstance(item["seq"], int) or isinstance(item["seq"], bool) or item["seq"] < 0:
             raise ValueError(f"invalid seq at index {index} (expected non-negative integer)")
+        if item["seq"] > MAX_SEQ:
+            raise ValueError(f"invalid seq at index {index} (exceeds {MAX_SEQ})")
         
         # Rule 6: timestamp must be valid ISO 8601 format
         try:

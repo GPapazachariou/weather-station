@@ -39,30 +39,34 @@ async def send_request(request):
         return None
 
 
+TEST_STATION = "CONSUMER-TEST"
+
+
+async def next_test_seq():
+    """Next unused seq for TEST_STATION, so reruns never reuse a stored key."""
+    response = await send_request({"request": "latest_seq", "station_id": TEST_STATION})
+    latest = (response or {}).get("latest_seq")
+    return 0 if latest is None else latest + 1
+
+
+def make_reading(seq, temperature=22.5):
+    return {
+        "station_id": TEST_STATION,
+        "seq": seq,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "temperature": temperature,
+        "humidity": 60,
+        "windspeed": 5.2,
+    }
+
+
 async def test_producer_ingest():
     """Test producer batch ingest (existing functionality)."""
     print("\n=== Test 1: Producer Batch Ingest ===")
-    
-    now = datetime.now(timezone.utc).isoformat()
-    batch = [
-        {
-            "station_id": "STATION-001",
-            "seq": 1,
-            "timestamp": now,
-            "temperature": 22.5,
-            "humidity": 60,
-            "windspeed": 5.2
-        },
-        {
-            "station_id": "STATION-002",
-            "seq": 1,
-            "timestamp": now,
-            "temperature": 18.3,
-            "humidity": 75,
-            "windspeed": 3.1
-        }
-    ]
-    
+
+    seq = await next_test_seq()
+    batch = [make_reading(seq), make_reading(seq + 1, temperature=18.3)]
+
     response = await send_request(batch)
     if response:
         print(f"  Response: {json.dumps(response, indent=2)}")
@@ -228,6 +232,45 @@ async def test_invalid_consumer_request():
     return False
 
 
+async def test_ping():
+    """Test liveness probe: ping returns pong without touching the database."""
+    print("\n=== Test 11: Ping ===")
+
+    response = await send_request({"request": "ping"})
+    if response:
+        print(f"  Response: {json.dumps(response, indent=2)}")
+        if response.get("status") == "ok" and response.get("pong") is True:
+            print("  ✓ Ping answered with pong")
+            return True
+
+    print("  ✗ Ping failed")
+    return False
+
+
+async def test_seq_conflict():
+    """Test integrity: identical replay is a duplicate, a different payload is a conflict."""
+    print("\n=== Test 12: Replay vs. Conflict ===")
+
+    reading = make_reading(await next_test_seq())
+    first = await send_request([reading])
+    replay = await send_request([reading])
+    conflict = await send_request([{**reading, "temperature": reading["temperature"] + 1}])
+    print(f"  First:    {first}")
+    print(f"  Replay:   {replay}")
+    print(f"  Conflict: {conflict}")
+
+    if (
+        first and first.get("inserted") == 1
+        and replay and replay.get("duplicates") == 1
+        and conflict and conflict.get("code") == "conflict"
+    ):
+        print("  ✓ Replay deduplicated and conflicting payload rejected")
+        return True
+
+    print("  ✗ Replay/conflict handling failed")
+    return False
+
+
 async def main():
     """Run all tests."""
     print("=" * 50)
@@ -246,6 +289,8 @@ async def main():
         test_consumer_latest_seq,
         test_consumer_since,
         test_invalid_consumer_request,
+        test_ping,
+        test_seq_conflict,
     ]
     
     results = []

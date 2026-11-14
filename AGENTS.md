@@ -22,11 +22,11 @@ Guidance for AI coding agents working in this repository. `CLAUDE.md` points her
 
 Distributed weather-station telemetry platform:
 
-- `server/` — asyncio TCP server on `:12345`. Validates NDJSON batches (`protocol.py`) and persists them to SQLite through a single-writer queue (`app.py`). It also answers consumer queries (`stations`, `latest`, `recent`) on the same port.
+- `server/` — asyncio TCP server on `:12345`. Validates NDJSON batches (`protocol.py`) and persists them to SQLite through a single-writer queue (`app.py`). It also answers consumer queries (`ping`, `stations`, `latest`, `recent`, `latest_seq`, `since`) on the same port, and serves Prometheus metrics on `:9100` (`telemetry.py`; named that way because `web/metrics.py` already owns the `metrics` import name).
 - `station_client/` — simulated station (`client.py`) that uses jittered exponential backoff and a bounded local buffer.
 - `web/` — Flask dashboard and REST API on `:8000` (`web.py`, `metrics.py`, `templates/`, `static/`). Reads SQLite in read-only/WAL mode.
 - `consumer_client/` — live integration script run against a running server.
-- `scripts/` — stress-compose generator, demo seeding, correctness/perf and recovery verification.
+- `scripts/` — stress-compose generator, demo seeding, correctness/perf and recovery verification, and the network lab (`netlab.py` harness, `impair_proxy.py`, `netlab_plot.py`). Lab runs are recorded under `docs/evidence/netlab/<label>/`; record them in Docker (`Dockerfile.verify`), since Windows timer granularity distorts small delays.
 - `tests/` — pytest suite.
 - `docs/` — design notes, reviews, and per-file explanations (`docs/explanation/`).
 

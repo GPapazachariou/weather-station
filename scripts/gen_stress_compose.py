@@ -52,10 +52,11 @@ services:
       dockerfile: Dockerfile
     ports:
       - "12345:12345"
+      - "9100:9100"  # Prometheus metrics
     volumes:
       - weather-stress-data:/app/data
     environment:
-      - SERVER_HOST=0.0.0.0
+      - SERVER_HOST=*
       - SERVER_PORT=12345
       - DB_PATH=/app/data/weather.db
       - PYTHONUNBUFFERED=1
@@ -64,7 +65,7 @@ services:
     networks:
       - weather-network
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('localhost',12345)); s.close()"]
+      test: ["CMD", "python", "healthcheck.py"]
       interval: 30s
       timeout: 10s
       retries: 3
