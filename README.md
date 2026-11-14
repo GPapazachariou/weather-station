@@ -287,8 +287,9 @@ python app.py
 ```
 Expected output:
 ```
-Database initialized: /app/data/weather.db
-Server listening on 0.0.0.0:12345
+INFO Database initialized with indexes: /app/data/weather.db
+INFO Weather Station Server listening on :: port 12345
+INFO Weather Station Server listening on 0.0.0.0 port 12345
 ```
 
 **Terminal 2: Start the web UI**
@@ -361,8 +362,24 @@ python consumer_client/test_consumer.py
 3. Consumer `latest` request: get newest reading (all stations or filtered by `station_id`)
 4. Consumer `recent` request: get last N readings with optional limit
 5. Invalid request handling: verify unknown request types are rejected cleanly
+6. `ping`: liveness probe answers with a pong
+7. Replay vs. conflict: an identical resend is a duplicate, the same `seq` with a different payload is rejected
 
-### 7.3 API Sanity Check
+The script writes to its own station ID (`CONSUMER-TEST`) at the next unused `seq`, so it can be rerun against a live stack.
+
+### 7.3 Network Impairment Lab
+
+[`scripts/netlab.py`](scripts/netlab.py) starts a real server on a temporary database, puts [`scripts/impair_proxy.py`](scripts/impair_proxy.py) (latency, jitter, rate cap, stalls, partitions) in front of it, and measures goodput against RTT, ACK latency percentiles, fairness across stations and recovery after a partition. [`scripts/netlab_plot.py`](scripts/netlab_plot.py) renders the charts.
+
+```bash
+docker build -f Dockerfile.verify -t weather-verify .
+docker run --rm -v "$PWD/docs/evidence/netlab:/workspace/docs/evidence/netlab" weather-verify \
+  sh -c "python scripts/netlab.py --label my-run && python scripts/netlab_plot.py docs/evidence/netlab/my-run/results.json"
+```
+
+It also runs directly with `python scripts/netlab.py --label my-run` (add `--quick` for a short smoke run). Recorded runs live in [`docs/evidence/netlab/`](docs/evidence/netlab/); the stop-and-wait baseline is [`phase0-baseline`](docs/evidence/netlab/phase0-baseline/report.md).
+
+### 7.4 API Sanity Check
 
 **Test API endpoints directly (via `curl` or browser):**
 
@@ -389,11 +406,14 @@ curl "http://localhost:8000/api/stats?station_id=STATION-001&metric=temperature&
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `DB_PATH` | `/app/data/weather.db` | Path to SQLite database file. Inside Docker, points to the mounted volume. |
-| `SERVER_HOST` | `0.0.0.0` | Bind address for the asyncio TCP server (configurable via environment variable). |
+| `SERVER_HOST` | `*` | Bind address for the asyncio TCP server. `*` listens on every interface over IPv4 and IPv6 (falls back to IPv4 if dual-stack is unavailable); a comma-separated list binds several addresses. |
 | `SERVER_PORT` | `12345` | TCP port for incoming station and consumer connections (configurable via environment variable). |
 | `WRITE_QUEUE_MAX` | `500` | Maximum write queue depth before applying backpressure. |
 | `WRITE_ENQUEUE_TIMEOUT` | `2.0` | Timeout in seconds waiting for queue space before returning `server_busy` backpressure. |
 | `WRITE_ACK_TIMEOUT` | `5.0` | Timeout in seconds waiting for writer task acknowledgment before timing out. |
+| `MAX_SEQ_JUMP` | `10000000` | Largest forward jump in `seq` a station may make past its highest stored `seq`. Larger jumps are rejected with `seq_out_of_range`. |
+| `METRICS_HOST` / `METRICS_PORT` | `0.0.0.0` / `9100` | Prometheus endpoint (`GET /metrics`, `GET /healthz`). A port of `0` or less disables it. |
+| `LOG_LEVEL` | `INFO` | Server log level. Per-batch and per-connection lines are logged at `DEBUG`. |
 
 **Weather Station Client** ([`station_client/client.py`](station_client/client.py)):
 
@@ -566,6 +586,37 @@ Get the last N readings (global or for a specific station).
 ```json
 {"status": "error", "reason": "unknown_request:typo"}
 ```
+
+#### 9.2.5 Ping
+Liveness probe. It never touches the database, and the Docker healthcheck ([`server/healthcheck.py`](server/healthcheck.py)) uses it.
+
+**Request:**
+```json
+{"request": "ping"}
+```
+
+**Response:**
+```json
+{"status": "ok", "pong": true, "server_time": "2026-11-14T17:00:00.123456+00:00"}
+```
+
+### 9.3 Error Codes
+
+Error replies always carry `status: "error"` and a `reason`. Replies a client should act on also carry a `code`:
+
+| `code` | Meaning | Retry the same batch? |
+|--------|---------|-----------------------|
+| `backpressure` | Write queue full (`retry_after` seconds given). | Yes |
+| `retryable` | Writer ACK timeout or a storage error. | Yes |
+| `conflict` | A `(station_id, seq)` key was reused with a different payload, inside the batch or against a stored reading. An identical resend is not a conflict; it is counted in `duplicates`. | No |
+| `seq_out_of_range` | `seq` is more than `MAX_SEQ_JUMP` past the station's highest stored `seq`. | No |
+| *(none)* | Validation error (`invalid_json`, field errors, `line_too_long`). | No |
+
+A rejected batch is all-or-nothing: none of its readings are stored.
+
+### 9.4 Metrics
+
+The server exposes Prometheus text-format metrics on `:9100/metrics`: `weather_connections_active`, `weather_connections_total`, `weather_batches_total{result}`, `weather_readings_inserted_total`, `weather_readings_duplicate_total` (replays), `weather_consumer_requests_total{request}`, `weather_bytes_received_total`, `weather_bytes_sent_total`, `weather_write_queue_depth`, and the histograms `weather_batch_ack_seconds` and `weather_db_commit_seconds`.
 
 ---
 

@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="440" viewBox="0 0 760 440" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="Per-station goodput">
+<rect width="760" height="440" fill="#fff"/>
+<line x1="76" x2="732" y1="384.0" y2="384.0" stroke="#e5e5e5" stroke-width="1"/>
+<text x="68.0" y="388.0" font-size="11" text-anchor="end" fill="#333">0</text>
+<line x1="76" x2="732" y1="321.2" y2="321.2" stroke="#e5e5e5" stroke-width="1"/>
+<text x="68.0" y="325.2" font-size="11" text-anchor="end" fill="#333">50</text>
+<line x1="76" x2="732" y1="258.4" y2="258.4" stroke="#e5e5e5" stroke-width="1"/>
+<text x="68.0" y="262.4" font-size="11" text-anchor="end" fill="#333">100</text>
+<line x1="76" x2="732" y1="195.6" y2="195.6" stroke="#e5e5e5" stroke-width="1"/>
+<text x="68.0" y="199.6" font-size="11" text-anchor="end" fill="#333">150</text>
+<line x1="76" x2="732" y1="132.8" y2="132.8" stroke="#e5e5e5" stroke-width="1"/>
+<text x="68.0" y="136.8" font-size="11" text-anchor="end" fill="#333">200</text>
+<line x1="76" x2="732" y1="70.0" y2="70.0" stroke="#e5e5e5" stroke-width="1"/>
+<text x="68.0" y="74.0" font-size="11" text-anchor="end" fill="#333">250</text>
+<line x1="76" x2="732" y1="384" y2="384" stroke="#999" stroke-width="1"/>
+<text x="404.0" y="428.0" font-size="12" text-anchor="middle" fill="#333">Station (sorted by goodput)</text>
+<text x="0.0" y="0.0" font-size="12" text-anchor="middle" fill="#333" transform="translate(16 227.0) rotate(-90)">Readings/s</text>
+<rect class="bar" x="77.0" y="117.9" width="11.1" height="266.1" fill="#0072B2"><title>Station rank 1: 211.8 readings/s</title></rect>
+<rect class="bar" x="90.1" y="117.9" width="11.1" height="266.1" fill="#0072B2"><title>Station rank 2: 211.9 readings/s</title></rect>
+<rect class="bar" x="103.2" y="117.9" width="11.1" height="266.1" fill="#0072B2"><title>Station rank 3: 211.9 readings/s</title></rect>
+<rect class="bar" x="116.4" y="117.9" width="11.1" height="266.1" fill="#0072B2"><title>Station rank 4: 211.9 readings/s</title></rect>
+<rect class="bar" x="129.5" y="117.8" width="11.1" height="266.2" fill="#0072B2"><title>Station rank 5: 211.9 readings/s</title></rect>
+<rect class="bar" x="142.6" y="117.8" width="11.1" height="266.2" fill="#0072B2"><title>Station rank 6: 211.9 readings/s</title></rect>
+<rect class="bar" x="155.7" y="117.8" width="11.1" height="266.2" fill="#0072B2"><title>Station rank 7: 211.9 readings/s</title></rect>
+<rect class="bar" x="168.8" y="117.8" width="11.1" height="266.2" fill="#0072B2"><title>Station rank 8: 212 readings/s</title></rect>
+<rect class="bar" x="182.0" y="117.6" width="11.1" height="266.4" fill="#0072B2"><title>Station rank 9: 212.1 readings/s</title></rect>
+<rect class="bar" x="195.1" y="117.6" width="11.1" height="266.4" fill="#0072B2"><title>Station rank 10: 212.1 readings/s</title></rect>
+<rect class="bar" x="208.2" y="117.6" width="11.1" height="266.4" fill="#0072B2"><title>Station rank 11: 212.1 readings/s</title></rect>
+<rect class="bar" x="221.3" y="117.6" width="11.1" height="266.4" fill="#0072B2"><title>Station rank 12: 212.1 readings/s</title></rect>
+<rect class="bar" x="234.4" y="117.6" width="11.1" height="266.4" fill="#0072B2"><title>Station rank 13: 212.1 readings/s</title></rect>
+<rect class="bar" x="247.6" y="117.5" width="11.1" height="266.5" fill="#0072B2"><title>Station rank 14: 212.2 readings/s</title></rect>
+<rect class="bar" x="260.7" y="117.5" width="11.1" height="266.5" fill="#0072B2"><title>Station rank 15: 212.2 readings/s</title></rect>
+<rect class="bar" x="273.8" y="117.5" width="11.1" height="266.5" fill="#0072B2"><title>Station rank 16: 212.2 readings/s</title></rect>
+<rect class="bar" x="286.9" y="117.5" width="11.1" height="266.5" fill="#0072B2"><title>Station rank 17: 212.2 readings/s</title></rect>
+<rect class="bar" x="300.0" y="117.5" width="11.1" height="266.5" fill="#0072B2"><title>Station rank 18: 212.2 readings/s</title></rect>
+<rect class="bar" x="313.2" y="117.5" width="11.1" height="266.5" fill="#0072B2"><title>Station rank 19: 212.2 readings/s</title></rect>
+<rect class="bar" x="326.3" y="117.5" width="11.1" height="266.5" fill="#0072B2"><title>Station rank 20: 212.2 readings/s</title></rect>
+<rect class="bar" x="339.4" y="117.4" width="11.1" height="266.6" fill="#0072B2"><title>Station rank 21: 212.2 readings/s</title></rect>
+<rect class="bar" x="352.5" y="117.4" width="11.1" height="266.6" fill="#0072B2"><title>Station rank 22: 212.2 readings/s</title></rect>
+<rect class="bar" x="365.6" y="117.4" width="11.1" height="266.6" fill="#0072B2"><title>Station rank 23: 212.3 readings/s</title></rect>
+<rect class="bar" x="378.8" y="117.3" width="11.1" height="266.7" fill="#0072B2"><title>Station rank 24: 212.3 readings/s</title></rect>
+<rect class="bar" x="391.9" y="117.3" width="11.1" height="266.7" fill="#0072B2"><title>Station rank 25: 212.3 readings/s</title></rect>
+<rect class="bar" x="405.0" y="117.3" width="11.1" height="266.7" fill="#0072B2"><title>Station rank 26: 212.4 readings/s</title></rect>
+<rect class="bar" x="418.1" y="117.2" width="11.1" height="266.8" fill="#0072B2"><title>Station rank 27: 212.4 readings/s</title></rect>
+<rect class="bar" x="431.2" y="117.2" width="11.1" height="266.8" fill="#0072B2"><title>Station rank 28: 212.4 readings/s</title></rect>
+<rect class="bar" x="444.4" y="117.2" width="11.1" height="266.8" fill="#0072B2"><title>Station rank 29: 212.4 readings/s</title></rect>
+<rect class="bar" x="457.5" y="117.2" width="11.1" height="266.8" fill="#0072B2"><title>Station rank 30: 212.4 readings/s</title></rect>
+<rect class="bar" x="470.6" y="117.2" width="11.1" height="266.8" fill="#0072B2"><title>Station rank 31: 212.5 readings/s</title></rect>
+<rect class="bar" x="483.7" y="117.1" width="11.1" height="266.9" fill="#0072B2"><title>Station rank 32: 212.5 readings/s</title></rect>
+<rect class="bar" x="496.8" y="117.1" width="11.1" height="266.9" fill="#0072B2"><title>Station rank 33: 212.5 readings/s</title></rect>
+<rect class="bar" x="510.0" y="117.1" width="11.1" height="266.9" fill="#0072B2"><title>Station rank 34: 212.5 readings/s</title></rect>
+<rect class="bar" x="523.1" y="117.1" width="11.1" height="266.9" fill="#0072B2"><title>Station rank 35: 212.5 readings/s</title></rect>
+<rect class="bar" x="536.2" y="117.1" width="11.1" height="266.9" fill="#0072B2"><title>Station rank 36: 212.5 readings/s</title></rect>
+<rect class="bar" x="549.3" y="117.0" width="11.1" height="267.0" fill="#0072B2"><title>Station rank 37: 212.5 readings/s</title></rect>
+<rect class="bar" x="562.4" y="117.0" width="11.1" height="267.0" fill="#0072B2"><title>Station rank 38: 212.5 readings/s</title></rect>
+<rect class="bar" x="575.6" y="117.0" width="11.1" height="267.0" fill="#0072B2"><title>Station rank 39: 212.6 readings/s</title></rect>
+<rect class="bar" x="588.7" y="117.0" width="11.1" height="267.0" fill="#0072B2"><title>Station rank 40: 212.6 readings/s</title></rect>
+<rect class="bar" x="601.8" y="117.0" width="11.1" height="267.0" fill="#0072B2"><title>Station rank 41: 212.6 readings/s</title></rect>
+<rect class="bar" x="614.9" y="117.0" width="11.1" height="267.0" fill="#0072B2"><title>Station rank 42: 212.6 readings/s</title></rect>
+<rect class="bar" x="628.0" y="116.9" width="11.1" height="267.1" fill="#0072B2"><title>Station rank 43: 212.6 readings/s</title></rect>
+<rect class="bar" x="641.2" y="116.9" width="11.1" height="267.1" fill="#0072B2"><title>Station rank 44: 212.7 readings/s</title></rect>
+<rect class="bar" x="654.3" y="116.9" width="11.1" height="267.1" fill="#0072B2"><title>Station rank 45: 212.7 readings/s</title></rect>
+<rect class="bar" x="667.4" y="116.9" width="11.1" height="267.1" fill="#0072B2"><title>Station rank 46: 212.7 readings/s</title></rect>
+<rect class="bar" x="680.5" y="116.8" width="11.1" height="267.2" fill="#0072B2"><title>Station rank 47: 212.7 readings/s</title></rect>
+<rect class="bar" x="693.6" y="116.8" width="11.1" height="267.2" fill="#0072B2"><title>Station rank 48: 212.7 readings/s</title></rect>
+<rect class="bar" x="706.8" y="116.8" width="11.1" height="267.2" fill="#0072B2"><title>Station rank 49: 212.7 readings/s</title></rect>
+<rect class="bar" x="719.9" y="116.8" width="11.1" height="267.2" fill="#0072B2"><title>Station rank 50: 212.7 readings/s</title></rect>
+<line x1="76" x2="732" y1="117.3" y2="117.3" stroke="#D55E00" stroke-width="1.5" stroke-dasharray="4 4"/>
+<text x="82.0" y="111.3" font-size="11" text-anchor="start" fill="#333" stroke="#fff" stroke-width="3" paint-order="stroke">mean 212.3</text>
+<text x="24.0" y="28.0" font-size="16" text-anchor="start" fill="#333" font-weight="bold">Per-station goodput</text>
+<text x="24.0" y="46.0" font-size="12" text-anchor="start" fill="#666">50 stations · Jain&#x27;s index 1 · total 10616.4 readings/s</text>
+</svg>

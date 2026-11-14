@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="440" viewBox="0 0 760 440" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="Goodput against loss-like stalls">
+<rect width="760" height="440" fill="#fff"/>
+<line x1="76" x2="732" y1="384.0" y2="384.0" stroke="#e5e5e5" stroke-width="1"/>
+<text x="68.0" y="388.0" font-size="11" text-anchor="end" fill="#333">0</text>
+<line x1="76" x2="732" y1="305.5" y2="305.5" stroke="#e5e5e5" stroke-width="1"/>
+<text x="68.0" y="309.5" font-size="11" text-anchor="end" fill="#333">50</text>
+<line x1="76" x2="732" y1="227.0" y2="227.0" stroke="#e5e5e5" stroke-width="1"/>
+<text x="68.0" y="231.0" font-size="11" text-anchor="end" fill="#333">100</text>
+<line x1="76" x2="732" y1="148.5" y2="148.5" stroke="#e5e5e5" stroke-width="1"/>
+<text x="68.0" y="152.5" font-size="11" text-anchor="end" fill="#333">150</text>
+<line x1="76" x2="732" y1="70.0" y2="70.0" stroke="#e5e5e5" stroke-width="1"/>
+<text x="68.0" y="74.0" font-size="11" text-anchor="end" fill="#333">200</text>
+<line x1="76" x2="732" y1="384" y2="384" stroke="#999" stroke-width="1"/>
+<line x1="76.0" x2="76.0" y1="384" y2="388" stroke="#999" stroke-width="1"/>
+<text x="76.0" y="402.0" font-size="11" text-anchor="middle" fill="#333">0</text>
+<line x1="207.2" x2="207.2" y1="384" y2="388" stroke="#999" stroke-width="1"/>
+<text x="207.2" y="402.0" font-size="11" text-anchor="middle" fill="#333">2</text>
+<line x1="338.4" x2="338.4" y1="384" y2="388" stroke="#999" stroke-width="1"/>
+<text x="338.4" y="402.0" font-size="11" text-anchor="middle" fill="#333">4</text>
+<line x1="469.6" x2="469.6" y1="384" y2="388" stroke="#999" stroke-width="1"/>
+<text x="469.6" y="402.0" font-size="11" text-anchor="middle" fill="#333">6</text>
+<line x1="600.8" x2="600.8" y1="384" y2="388" stroke="#999" stroke-width="1"/>
+<text x="600.8" y="402.0" font-size="11" text-anchor="middle" fill="#333">8</text>
+<line x1="732.0" x2="732.0" y1="384" y2="388" stroke="#999" stroke-width="1"/>
+<text x="732.0" y="402.0" font-size="11" text-anchor="middle" fill="#333">10</text>
+<text x="404.0" y="428.0" font-size="12" text-anchor="middle" fill="#333">Stall probability per chunk (%)</text>
+<text x="0.0" y="0.0" font-size="12" text-anchor="middle" fill="#333" transform="translate(16 227.0) rotate(-90)">Goodput (readings/s)</text>
+<polyline points="76.0,93.6 141.6,126.0 207.2,146.1 404.0,214.6 732.0,224.9" fill="none" stroke="#0072B2" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></polyline>
+<circle cx="76.0" cy="93.6" r="3.5" fill="#0072B2" stroke="#fff" stroke-width="1.5"><title>0% stalls: 185 readings/s</title></circle>
+<circle cx="141.6" cy="126.0" r="3.5" fill="#0072B2" stroke="#fff" stroke-width="1.5"><title>1% stalls: 164.3 readings/s</title></circle>
+<circle cx="207.2" cy="146.1" r="3.5" fill="#0072B2" stroke="#fff" stroke-width="1.5"><title>2% stalls: 151.5 readings/s</title></circle>
+<circle cx="404.0" cy="214.6" r="3.5" fill="#0072B2" stroke="#fff" stroke-width="1.5"><title>5% stalls: 107.9 readings/s</title></circle>
+<circle cx="732.0" cy="224.9" r="3.5" fill="#0072B2" stroke="#fff" stroke-width="1.5"><title>10% stalls: 101.3 readings/s</title></circle>
+<text x="24.0" y="28.0" font-size="16" text-anchor="start" fill="#333" font-weight="bold">Goodput against loss-like stalls</text>
+<text x="24.0" y="46.0" font-size="12" text-anchor="start" fill="#666">phase0-baseline · 50 ms added RTT · 200 ms stalls</text>
+</svg>

@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="440" viewBox="0 0 760 440" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="Goodput against round-trip time">
+<rect width="760" height="440" fill="#fff"/>
+<line x1="76" x2="732" y1="384.0" y2="384.0" stroke="#e5e5e5" stroke-width="1"/>
+<text x="68.0" y="388.0" font-size="11" text-anchor="end" fill="#333">10</text>
+<line x1="76" x2="732" y1="284.0" y2="284.0" stroke="#e5e5e5" stroke-width="1"/>
+<text x="68.0" y="288.0" font-size="11" text-anchor="end" fill="#333">100</text>
+<line x1="76" x2="732" y1="184.0" y2="184.0" stroke="#e5e5e5" stroke-width="1"/>
+<text x="68.0" y="188.0" font-size="11" text-anchor="end" fill="#333">1k</text>
+<line x1="76" x2="732" y1="84.0" y2="84.0" stroke="#e5e5e5" stroke-width="1"/>
+<text x="68.0" y="88.0" font-size="11" text-anchor="end" fill="#333">10k</text>
+<line x1="76" x2="732" y1="384" y2="384" stroke="#999" stroke-width="1"/>
+<line x1="76.0" x2="76.0" y1="384" y2="388" stroke="#999" stroke-width="1"/>
+<text x="76.0" y="402.0" font-size="11" text-anchor="middle" fill="#333">0</text>
+<line x1="240.0" x2="240.0" y1="384" y2="388" stroke="#999" stroke-width="1"/>
+<text x="240.0" y="402.0" font-size="11" text-anchor="middle" fill="#333">100</text>
+<line x1="404.0" x2="404.0" y1="384" y2="388" stroke="#999" stroke-width="1"/>
+<text x="404.0" y="402.0" font-size="11" text-anchor="middle" fill="#333">200</text>
+<line x1="568.0" x2="568.0" y1="384" y2="388" stroke="#999" stroke-width="1"/>
+<text x="568.0" y="402.0" font-size="11" text-anchor="middle" fill="#333">300</text>
+<line x1="732.0" x2="732.0" y1="384" y2="388" stroke="#999" stroke-width="1"/>
+<text x="732.0" y="402.0" font-size="11" text-anchor="middle" fill="#333">400</text>
+<text x="404.0" y="428.0" font-size="12" text-anchor="middle" fill="#333">Added round-trip time (ms)</text>
+<text x="0.0" y="0.0" font-size="12" text-anchor="middle" fill="#333" transform="translate(16 234.0) rotate(-90)">Goodput (readings/s, log scale)</text>
+<polyline points="76.0,87.6 92.4,188.5 108.8,216.4 158.0,254.8 240.0,284.5 404.0,314.3 732.0,344.3" fill="none" stroke="#D55E00" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="6 4"><title>Model</title></polyline>
+<polyline points="76.0,90.7 92.4,194.9 108.8,220.5 158.0,257.0 240.0,285.4 404.0,314.9 732.0,344.8" fill="none" stroke="#0072B2" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"><title>Measured</title></polyline>
+<circle cx="76.0" cy="90.7" r="3.5" fill="#0072B2" stroke="#fff" stroke-width="1.5"><title>RTT 0 ms: 8564.7 readings/s measured; ACK p50 0.84 ms, p99 4.75 ms</title></circle>
+<circle cx="92.4" cy="194.9" r="3.5" fill="#0072B2" stroke="#fff" stroke-width="1.5"><title>RTT 10 ms: 778.2 readings/s measured; ACK p50 12.34 ms, p99 17.7 ms</title></circle>
+<circle cx="108.8" cy="220.5" r="3.5" fill="#0072B2" stroke="#fff" stroke-width="1.5"><title>RTT 20 ms: 431.8 readings/s measured; ACK p50 22.63 ms, p99 32.05 ms</title></circle>
+<circle cx="158.0" cy="257.0" r="3.5" fill="#0072B2" stroke="#fff" stroke-width="1.5"><title>RTT 50 ms: 186 readings/s measured; ACK p50 53.13 ms, p99 56.11 ms</title></circle>
+<circle cx="240.0" cy="285.4" r="3.5" fill="#0072B2" stroke="#fff" stroke-width="1.5"><title>RTT 100 ms: 96.8 readings/s measured; ACK p50 102.92 ms, p99 109.57 ms</title></circle>
+<circle cx="404.0" cy="314.9" r="3.5" fill="#0072B2" stroke="#fff" stroke-width="1.5"><title>RTT 200 ms: 49.1 readings/s measured; ACK p50 202.91 ms, p99 218.09 ms</title></circle>
+<circle cx="732.0" cy="344.8" r="3.5" fill="#0072B2" stroke="#fff" stroke-width="1.5"><title>RTT 400 ms: 24.7 readings/s measured; ACK p50 405.31 ms, p99 407.75 ms</title></circle>
+<text x="24.0" y="28.0" font-size="16" text-anchor="start" fill="#333" font-weight="bold">Goodput against round-trip time</text>
+<text x="24.0" y="46.0" font-size="12" text-anchor="start" fill="#666">phase0-baseline · batch of 10 readings · one station</text>
+<line x1="268.6" x2="290.6" y1="66" y2="66" stroke="#0072B2" stroke-width="2"/>
+<text x="296.6" y="70.0" font-size="12" text-anchor="start" fill="#333">Measured (stop-and-wait)</text>
+<line x1="473.0" x2="495.0" y1="66" y2="66" stroke="#D55E00" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="501.0" y="70.0" font-size="12" text-anchor="start" fill="#333">Model: batch / (RTT + service time)</text>
+</svg>
