@@ -33,3 +33,6 @@ desktop.ini
 # Docker
 docker-compose.override.yml
 
+
+# taste-skill working files (screenshots, gate state)
+.taste-skill/

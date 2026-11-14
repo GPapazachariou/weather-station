@@ -40,101 +40,95 @@ let currentTheme = document.documentElement.getAttribute('data-theme') === 'ligh
 const STALE_THRESHOLD_SECONDS = 180; // 3 minutes without new telemetry
 
 const METRIC_CONFIGS = {
-    temperature: {
-        id: 'temperature',
-        title: 'Air temperature',
-        unit: '°C',
-        canvasId: 'chart-temperature',
-        color: '#c83e2b',
-        rawBorder: '#d94f3d',
-        rawBg: 'rgba(200, 62, 43, 0.08)',
-        rollingBorder: '#7f1d1d',
-        darkColor: '#f87171',
-        darkRawBorder: '#f87171',
-        darkRawBg: 'rgba(248, 113, 113, 0.14)',
-        darkRollingBorder: '#fecaca',
-        dotClass: 'temp-dot'
-    },
-    humidity: {
-        id: 'humidity',
-        title: 'Relative humidity',
-        unit: '%',
-        canvasId: 'chart-humidity',
-        color: '#0b6e99',
-        rawBorder: '#0ea5e9',
-        rawBg: 'rgba(11, 110, 153, 0.08)',
-        rollingBorder: '#0c4a6e',
-        darkColor: '#38bdf8',
-        darkRawBorder: '#38bdf8',
-        darkRawBg: 'rgba(56, 189, 248, 0.14)',
-        darkRollingBorder: '#bae6fd',
-        dotClass: 'hum-dot'
-    },
-    windspeed: {
-        id: 'windspeed',
-        title: 'Wind velocity',
-        unit: 'm/s',
-        canvasId: 'chart-windspeed',
-        color: '#13755b',
-        rawBorder: '#10b981',
-        rawBg: 'rgba(19, 117, 91, 0.08)',
-        rollingBorder: '#064e3b',
-        darkColor: '#34d399',
-        darkRawBorder: '#34d399',
-        darkRawBg: 'rgba(52, 211, 153, 0.14)',
-        darkRollingBorder: '#a7f3d0',
-        dotClass: 'wind-dot'
-    },
-    dew_point: {
-        id: 'dew_point',
-        title: 'Dew point',
-        unit: '°C',
-        canvasId: 'chart-dewpoint',
-        color: '#5b4699',
-        rawBorder: '#7c3aed',
-        rawBg: 'rgba(91, 70, 153, 0.08)',
-        rollingBorder: '#3b0764',
-        darkColor: '#a78bfa',
-        darkRawBorder: '#a78bfa',
-        darkRawBg: 'rgba(167, 139, 250, 0.15)',
-        darkRollingBorder: '#ddd6fe',
-        dotClass: 'dew-dot',
-        isCalculated: true
-    }
+    temperature: { id: 'temperature', title: 'Temperature', unit: '°C', canvasId: 'chart-temperature', prefix: 'temp' },
+    humidity: { id: 'humidity', title: 'Humidity', unit: '%', canvasId: 'chart-humidity', prefix: 'hum' },
+    windspeed: { id: 'windspeed', title: 'Wind speed', unit: 'm/s', canvasId: 'chart-windspeed', prefix: 'wind' },
+    dew_point: { id: 'dew_point', title: 'Dew point', unit: '°C', canvasId: 'chart-dewpoint', prefix: 'dew', isCalculated: true }
 };
 
 // Aliases for compatibility
 METRIC_CONFIGS.dewpoint = METRIC_CONFIGS.dew_point;
 METRIC_CONFIGS.wind_speed = METRIC_CONFIGS.windspeed;
 
+const CHART_FONT = '"Epilogue", system-ui, sans-serif';
+
 /**
- * Return theme-aware chart palette tokens for light vs dark mode
+ * Read a colour token from styles.css for the current theme
+ */
+function cssToken(name, fallback) {
+    const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return value || fallback;
+}
+
+/**
+ * Return theme-aware chart tokens (all defined once in styles.css)
  */
 function getChartThemeTokens() {
     const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
     return {
         isDark,
-        legendColor: isDark ? '#a8bbd1' : '#3b4d63',
-        tickColor: isDark ? '#768ca8' : '#61748a',
-        gridY: isDark ? 'rgba(57, 82, 115, 0.42)' : 'rgba(197, 209, 222, 0.55)',
-        gridX: isDark ? 'rgba(37, 56, 82, 0.45)' : 'rgba(221, 229, 238, 0.45)',
-        pointBorder: isDark ? '#111c2b' : '#ffffff',
-        tooltipBg: isDark ? 'rgba(7, 13, 22, 0.96)' : 'rgba(15, 27, 41, 0.95)',
-        tooltipBorder: isDark ? 'rgba(56, 189, 248, 0.3)' : 'rgba(148, 163, 184, 0.25)'
+        legendColor: cssToken('--muted', '#8891a1'),
+        tickColor: cssToken('--muted', '#8891a1'),
+        gridY: cssToken('--chart-grid', 'rgba(233, 237, 243, 0.1)'),
+        gridX: 'transparent',
+        pointBorder: cssToken('--surface', '#131824'),
+        tooltipBg: cssToken('--tooltip-bg', '#e9edf3'),
+        tooltipInk: cssToken('--tooltip-ink', '#0a0d14'),
+        tooltipBorder: 'transparent',
+        average: cssToken('--chart-average', '#e9edf3')
     };
 }
 
 /**
- * Resolve metric colors for current theme
+ * Resolve the series colour of a measurement for the current theme
  */
 function getThemedMetricColors(config) {
-    const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
+    const color = cssToken(`--series-${config.id || 'temperature'}`, '#3d9be6');
     return {
-        color: (isDark && config.darkColor) ? config.darkColor : config.color,
-        rawBorder: (isDark && config.darkRawBorder) ? config.darkRawBorder : config.rawBorder,
-        rawBg: (isDark && config.darkRawBg) ? config.darkRawBg : config.rawBg,
-        rollingBorder: (isDark && config.darkRollingBorder) ? config.darkRollingBorder : config.rollingBorder
+        color,
+        rawBorder: color,
+        rawBg: 'transparent',
+        rollingBorder: cssToken('--chart-average', '#e9edf3')
     };
+}
+
+/**
+ * One decimal place and the unit, or a dash when there is no value
+ */
+function formatValue(value, unit) {
+    if (value === null || value === undefined || isNaN(value)) return '--';
+    const text = Number(value).toFixed(1);
+    return unit ? `${text} ${unit}` : text;
+}
+
+/**
+ * Write a large reading: the number, then its unit in a smaller size
+ */
+function setReading(el, value, unit) {
+    if (!el) return;
+    if (value === null || value === undefined || isNaN(value)) {
+        el.textContent = '--';
+        return;
+    }
+    const num = document.createElement('span');
+    num.className = 'num';
+    num.textContent = Number(value).toFixed(1);
+    const unitEl = document.createElement('span');
+    unitEl.className = 'unit';
+    unitEl.textContent = unit;
+    el.replaceChildren(num, document.createTextNode('\u00a0'), unitEl);
+}
+
+/**
+ * Keep the time-range buttons in step with the select that holds the value
+ */
+function syncRangeButtons() {
+    const value = document.getElementById('range-select')?.value;
+    document.querySelectorAll('.range-buttons [data-range]').forEach(btn => {
+        const on = btn.dataset.range === value;
+        btn.classList.toggle('active', on);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
 }
 
 /**
@@ -189,7 +183,8 @@ function updateActiveChartsTheme() {
         }
         if (inst.options?.plugins?.tooltip) {
             inst.options.plugins.tooltip.backgroundColor = tokens.tooltipBg;
-            inst.options.plugins.tooltip.borderColor = tokens.tooltipBorder;
+            inst.options.plugins.tooltip.titleColor = tokens.tooltipInk;
+            inst.options.plugins.tooltip.bodyColor = tokens.tooltipInk;
         }
         if (inst.options?.scales?.y) {
             if (inst.options.scales.y.grid) inst.options.scales.y.grid.color = tokens.gridY;
@@ -322,6 +317,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('station-select').addEventListener('change', onStationChange);
     document.getElementById('metric-select').addEventListener('change', onMetricChange);
     document.getElementById('range-select').addEventListener('change', onRangeChange);
+    document.querySelectorAll('.range-buttons [data-range]').forEach(btn => {
+        btn.addEventListener('click', () => window.setRangeAndRefresh(btn.dataset.range));
+    });
+    syncRangeButtons();
     document.getElementById('limit-select').addEventListener('change', () => { savePreferences(); refreshAll(); });
     document.getElementById('toggleRaw').addEventListener('change', onToggleChange);
     document.getElementById('toggleRolling').addEventListener('change', onToggleChange);
@@ -332,7 +331,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         Object.entries(charts).forEach(([key, inst]) => {
             if (inst && typeof inst.resize === 'function') {
                 if (inst.options?.scales?.x?.ticks) {
-                    inst.options.scales.x.ticks.maxTicksLimit = key === 'single' ? (isCompact ? 5 : 10) : (isCompact ? 5 : 7);
+                    inst.options.scales.x.ticks.maxTicksLimit = isCompact ? 4 : (key === 'single' ? 10 : 8);
                 }
                 inst.resize();
             }
@@ -407,10 +406,10 @@ function setLiveStatus(status) {
         text.textContent = 'Live';
         if (btnReconnect) btnReconnect.style.display = 'none';
     } else if (status === 'reconnecting') {
-        text.textContent = 'Reconnecting...';
+        text.textContent = 'Reconnecting';
         if (btnReconnect) btnReconnect.style.display = 'inline-flex';
     } else if (status === 'connecting') {
-        text.textContent = 'Connecting...';
+        text.textContent = 'Connecting';
         if (btnReconnect) btnReconnect.style.display = 'none';
     } else {
         text.textContent = 'Offline';
@@ -453,36 +452,38 @@ function updateLastUpdatedDisplay() {
     if (!span) return;
 
     if (!lastUpdatedTime) {
-        span.textContent = 'Last updated: --';
+        span.textContent = 'No readings yet';
         if (badge && text) {
-            badge.className = 'freshness-badge stale';
-            text.textContent = 'Waiting';
+            badge.className = 'freshness-badge waiting';
+            text.textContent = 'Waiting for readings';
         }
         return;
     }
 
     const diffSec = Math.max(0, Math.floor((Date.now() - lastUpdatedTime.getTime()) / 1000));
+    let ago;
     if (diffSec < 2) {
-        span.textContent = 'Last updated: just now';
+        ago = 'just now';
     } else if (diffSec < 60) {
-        span.textContent = `Last updated: ${diffSec}s ago`;
+        ago = `${diffSec} s ago`;
     } else if (diffSec < 3600) {
-        span.textContent = `Last updated: ${Math.floor(diffSec / 60)}m ago`;
+        ago = `${Math.floor(diffSec / 60)} min ago`;
     } else {
-        span.textContent = `Last updated: ${Math.floor(diffSec / 3600)}h ago`;
+        ago = `${Math.floor(diffSec / 3600)} h ago`;
     }
+    span.textContent = `Updated ${ago}`;
 
     if (badge && text) {
         if (diffSec >= STALE_THRESHOLD_SECONDS) {
             badge.className = 'freshness-badge stale';
             const mins = Math.floor(diffSec / 60);
-            text.textContent = mins > 0 ? `Stale (${mins}m)` : `Stale (${diffSec}s)`;
-            badge.setAttribute('title', `Data is stale: no updates received for ${mins > 0 ? mins + 'm' : diffSec + 's'}`);
+            const gap = mins >= 60 ? `${Math.floor(mins / 60)} h` : `${mins} min`;
+            text.textContent = `No new readings for ${gap}`;
         } else {
             badge.className = 'freshness-badge fresh';
-            text.textContent = 'Fresh';
-            badge.setAttribute('title', 'Telemetry data is fresh and receiving live updates');
+            text.textContent = 'Up to date';
         }
+        badge.removeAttribute('title');
     }
 }
 
@@ -634,32 +635,10 @@ function handleLiveReading(reading) {
             if (val === undefined || val === null) continue;
 
             const numVal = typeof val === 'number' ? val : parseFloat(val);
-            const valStr = numVal.toFixed(2);
 
-            // Update latest readings immediately
-            if (m === 'temperature') {
-                document.getElementById('stat-temp-latest').textContent = `${valStr} °C`;
-                document.getElementById('mini-temp-latest').textContent = `${valStr} °C`;
-                const heroTemp = document.getElementById('hero-quick-temp');
-                if (heroTemp) heroTemp.textContent = `${valStr} °C`;
-            } else if (m === 'humidity') {
-                document.getElementById('stat-hum-latest').textContent = `${valStr} %`;
-                document.getElementById('mini-hum-latest').textContent = `${valStr} %`;
-                const heroHum = document.getElementById('hero-quick-hum');
-                if (heroHum) heroHum.textContent = `${valStr} %`;
-            } else if (m === 'windspeed') {
-                document.getElementById('stat-wind-latest').textContent = `${valStr} m/s`;
-                document.getElementById('mini-wind-latest').textContent = `${valStr} m/s`;
-                const heroWind = document.getElementById('hero-quick-wind');
-                if (heroWind) heroWind.textContent = `${valStr} m/s`;
-            } else if (m === 'dew_point') {
-                const statDew = document.getElementById('stat-dew-latest');
-                if (statDew) statDew.textContent = `${valStr} °C`;
-                const miniDew = document.getElementById('mini-dew-latest');
-                if (miniDew) miniDew.textContent = `${valStr} °C`;
-                const heroDew = document.getElementById('hero-quick-dew');
-                if (heroDew) heroDew.textContent = `${valStr} °C`;
-            }
+            // Update the latest reading at once
+            const liveConfig = METRIC_CONFIGS[m];
+            setReading(document.getElementById(`stat-${liveConfig.prefix}-latest`), numVal, liveConfig.unit);
 
             multiSeries[m].push({ t: reading.timestamp, v: numVal });
             if (limit && multiSeries[m].length > limit) {
@@ -683,8 +662,8 @@ function handleLiveReading(reading) {
         if (val === undefined || val === null) return;
 
         const numVal = typeof val === 'number' ? val : parseFloat(val);
-        document.getElementById('stat-latest').textContent = numVal.toFixed(2);
-        document.getElementById('stat-latest-time').textContent = formatUtcTimestamp(reading.timestamp);
+        setReading(document.getElementById('stat-latest'), numVal, (METRIC_CONFIGS[metricMode] || {}).unit || '');
+        document.getElementById('stat-latest-time').textContent = formatFullTimestamp(reading.timestamp);
 
         currentRawPoints.push({ t: reading.timestamp, v: numVal });
         if (limit && currentRawPoints.length > limit) {
@@ -716,7 +695,7 @@ async function loadStations() {
 
         if (stations.length === 0) {
             console.warn('[Stations] No stations found');
-            select.innerHTML = '<option value="">No stations available</option>';
+            select.innerHTML = '<option value="">No stations</option>';
             showEmptyState();
             return;
         }
@@ -741,7 +720,7 @@ async function loadStations() {
 
     } catch (error) {
         console.error('[Error] Failed to load stations:', error);
-        document.getElementById('station-select').innerHTML = '<option value="">Error loading</option>';
+        document.getElementById('station-select').innerHTML = '<option value="">Could not load</option>';
         showEmptyState();
     }
 }
@@ -771,6 +750,7 @@ function hideErrorBanner() {
  */
 function onRangeChange() {
     savePreferences();
+    syncRangeButtons();
     const rangeSelect = document.getElementById('range-select').value;
     const limitSelect = document.getElementById('limit-select');
     const limitField = document.getElementById('limit-field');
@@ -790,7 +770,7 @@ function onRangeChange() {
  * Set aria-busy state on dashboard content sections
  */
 function setAriaBusy(isBusy) {
-    const multiPanels = document.getElementById('multi-panels-container');
+    const multiPanels = document.getElementById('multi-stats-container');
     const singleChart = document.getElementById('chart-container');
     const tableContainer = document.getElementById('table-container');
     const val = isBusy ? 'true' : 'false';
@@ -805,39 +785,24 @@ function setAriaBusy(isBusy) {
 function updateContainerVisibility(metric, format) {
     const multiStats = document.getElementById('multi-stats-container');
     const singleStats = document.getElementById('stats-container');
-    const multiPanels = document.getElementById('multi-panels-container');
     const singleChart = document.getElementById('chart-container');
     const tableContainer = document.getElementById('table-container');
+    const chartLines = document.getElementById('chart-lines');
+    const isTable = format === 'table';
 
-    // Stats cards visibility
-    if (metric === 'all') {
-        if (multiStats) multiStats.style.display = 'grid';
-        if (singleStats) singleStats.style.display = 'none';
-    } else {
-        if (multiStats) multiStats.style.display = 'none';
-        if (singleStats) singleStats.style.display = 'grid';
+    // The four rows (reading + chart) or the single measurement's figures
+    if (multiStats) {
+        multiStats.style.display = metric === 'all' ? 'grid' : 'none';
+        // In the table view the rows keep their readings and drop their charts
+        multiStats.classList.toggle('is-compact', isTable);
     }
+    if (singleStats) singleStats.style.display = metric === 'all' ? 'none' : 'grid';
 
-    const quickReadings = document.getElementById('context-quick-readings');
-    if (quickReadings) {
-        quickReadings.style.display = (metric === 'all') ? 'none' : 'inline-flex';
-    }
+    if (singleChart) singleChart.style.display = (!isTable && metric !== 'all') ? 'block' : 'none';
+    if (tableContainer) tableContainer.style.display = isTable ? 'block' : 'none';
 
-    // Format visibility
-    if (format === 'table') {
-        if (multiPanels) multiPanels.style.display = 'none';
-        if (singleChart) singleChart.style.display = 'none';
-        if (tableContainer) tableContainer.style.display = 'block';
-    } else {
-        if (tableContainer) tableContainer.style.display = 'none';
-        if (metric === 'all') {
-            if (multiPanels) multiPanels.style.display = 'grid';
-            if (singleChart) singleChart.style.display = 'none';
-        } else {
-            if (multiPanels) multiPanels.style.display = 'none';
-            if (singleChart) singleChart.style.display = 'block';
-        }
-    }
+    // The line options only apply to charts
+    if (chartLines) chartLines.hidden = isTable;
 }
 
 /**
@@ -871,14 +836,14 @@ async function refreshAll() {
 
         // Update context bar station and range badges
         const contextStation = document.getElementById('context-station-name');
-        if (contextStation) contextStation.textContent = station || 'None';
+        if (contextStation) contextStation.textContent = station || 'No station';
 
         const rangeSelectElem = document.getElementById('range-select');
         const contextRange = document.getElementById('context-range-label');
         if (contextRange && rangeSelectElem) {
             if (range === 'limit') {
                 const limitVal = limitSelect ? limitSelect.value : 50;
-                contextRange.textContent = `Last ${limitVal} values`;
+                contextRange.textContent = `Latest ${limitVal} readings`;
             } else {
                 const selectedOpt = rangeSelectElem.options[rangeSelectElem.selectedIndex];
                 contextRange.textContent = selectedOpt ? selectedOpt.textContent : range;
@@ -994,7 +959,7 @@ async function fetchStats(queryParams, signal, fetchId, station, metric, range) 
     } catch (error) {
         if (error.name === 'AbortError') return null;
         console.error('[Error] Failed to fetch stats:', error);
-        showErrorBanner('Failed to fetch statistics. Please check server or database.');
+        showErrorBanner('Could not load the figures. Check that the server is running, then try again.');
         throw error;
     }
 }
@@ -1004,156 +969,102 @@ async function fetchStats(queryParams, signal, fetchId, station, metric, range) 
  */
 function formatReadingAge(ageSec) {
     if (ageSec === null || ageSec === undefined || isNaN(ageSec)) return '--';
-    if (ageSec < 60) return `${Math.round(ageSec)}s ago`;
-    if (ageSec < 3600) return `${Math.floor(ageSec / 60)}m ago`;
-    return `${Math.floor(ageSec / 3600)}h ago`;
+    if (ageSec < 60) return `${Math.round(ageSec)} s ago`;
+    if (ageSec < 3600) return `${Math.floor(ageSec / 60)} min ago`;
+    return `${Math.floor(ageSec / 3600)} h ago`;
 }
 
+const CHANGE_REASONS = {
+    'Comparison unavailable for record count window': 'No comparison for latest readings',
+    'Comparison unavailable for all history': 'No comparison for all readings',
+    'No readings in preceding period': 'No earlier readings',
+    'Insufficient data': 'Too few readings'
+};
+
 /**
- * Format period-over-period change with sign and unit, or show reason if unavailable
+ * Format the change against the period before, signed and with its unit, or say why there is none
  */
-function formatPeriodChange(changeDetails, unit) {
+function formatPeriodChange(changeDetails, unit, short = false) {
     if (!changeDetails) return '--';
     if (!changeDetails.available) {
-        return changeDetails.reason ? `Unavailable (${changeDetails.reason})` : 'Unavailable';
+        if (short) return 'No comparison';
+        return CHANGE_REASONS[changeDetails.reason] || changeDetails.reason || 'No comparison';
     }
     const delta = changeDetails.mean_change;
     if (delta === null || delta === undefined || isNaN(delta)) return '--';
-    const sign = delta > 0 ? '+' : '';
-    const arrow = delta > 0 ? '▲ ' : (delta < 0 ? '▼ ' : '');
-    return `${arrow}${sign}${delta.toFixed(2)} ${unit}`;
+    const rounded = Number(delta.toFixed(1));
+    const sign = rounded > 0 ? '+' : (rounded < 0 ? '\u2212' : '');
+    return `${sign}${Math.abs(rounded).toFixed(1)} ${unit}`;
 }
 
 /**
- * Update stats cards for All Panels view
+ * Update the reading and figures of each of the four rows
  */
 function updateMultiMetricStats(data) {
     if (!data) return;
 
-    const metrics = [
-        { key: 'temperature', prefix: 'temp', unit: '°C' },
-        { key: 'humidity', prefix: 'hum', unit: '%' },
-        { key: 'windspeed', prefix: 'wind', unit: 'm/s' },
-        { key: 'dew_point', prefix: 'dew', unit: '°C' }
-    ];
+    for (const key of ['temperature', 'humidity', 'windspeed', 'dew_point']) {
+        const item = data[key] || {};
+        const p = METRIC_CONFIGS[key].prefix;
+        const u = METRIC_CONFIGS[key].unit;
+        const mean = item.sample_mean !== null && item.sample_mean !== undefined ? item.sample_mean : item.avg;
+        const set = (id, text) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = text;
+        };
 
-    for (const m of metrics) {
-        const item = data[m.key] || {};
-        const p = m.prefix;
-        const u = m.unit;
-
-        const latestVal = item.latest !== null && item.latest !== undefined ? `${item.latest.toFixed(2)} ${u}` : '--';
-        const avgVal = item.sample_mean !== null && item.sample_mean !== undefined ? `${item.sample_mean.toFixed(2)} ${u}` : (item.avg !== null && item.avg !== undefined ? `${item.avg.toFixed(2)} ${u}` : '--');
-        const twaVal = item.time_weighted_mean !== null && item.time_weighted_mean !== undefined ? `${item.time_weighted_mean.toFixed(2)} ${u}` : '--';
-        const minVal = item.min !== null && item.min !== undefined ? `${item.min.toFixed(2)} ${u}` : '--';
-        const maxVal = item.max !== null && item.max !== undefined ? `${item.max.toFixed(2)} ${u}` : '--';
-        const countVal = item.sample_count !== null && item.sample_count !== undefined ? `${item.sample_count}` : (item.count !== null && item.count !== undefined ? `${item.count}` : '--');
-        const ageVal = formatReadingAge(item.reading_age_seconds);
-        const changeVal = formatPeriodChange(item.change_details, u);
-
-        // Update card elements
-        const statLatest = document.getElementById(`stat-${p}-latest`);
-        if (statLatest) statLatest.textContent = latestVal;
-        const statAvg = document.getElementById(`stat-${p}-avg`);
-        if (statAvg) statAvg.textContent = avgVal;
-        const statTwa = document.getElementById(`stat-${p}-twa`);
-        if (statTwa) statTwa.textContent = twaVal;
-        const statMin = document.getElementById(`stat-${p}-min`);
-        if (statMin) statMin.textContent = minVal;
-        const statMax = document.getElementById(`stat-${p}-max`);
-        if (statMax) statMax.textContent = maxVal;
-        const statCount = document.getElementById(`stat-${p}-count`);
-        if (statCount) statCount.textContent = countVal;
-        const statAge = document.getElementById(`stat-${p}-age`);
-        if (statAge) {
-            statAge.textContent = ageVal;
-            statAge.dataset.readingTimestamp = item.latest_t || '';
+        setReading(document.getElementById(`stat-${p}-latest`), item.latest, u);
+        set(`stat-${p}-min`, formatValue(item.min, ''));
+        set(`stat-${p}-max`, formatValue(item.max, u));
+        set(`stat-${p}-avg`, formatValue(mean, u));
+        set(`stat-${p}-twa`, formatValue(item.time_weighted_mean, u));
+        const changeEl = document.getElementById(`stat-${p}-change`);
+        if (changeEl) {
+            changeEl.textContent = formatPeriodChange(item.change_details, u, true);
+            const why = item.change_details && !item.change_details.available
+                ? (CHANGE_REASONS[item.change_details.reason] || item.change_details.reason || '')
+                : '';
+            if (why) changeEl.title = why; else changeEl.removeAttribute('title');
         }
-        const statChange = document.getElementById(`stat-${p}-change`);
-        if (statChange) statChange.textContent = changeVal;
-
-        // Update panel mini stats
-        const miniLatest = document.getElementById(`mini-${p}-latest`);
-        if (miniLatest) miniLatest.textContent = latestVal;
-        const miniAvg = document.getElementById(`mini-${p}-avg`);
-        if (miniAvg) miniAvg.textContent = avgVal;
-        const miniTwa = document.getElementById(`mini-${p}-twa`);
-        if (miniTwa) miniTwa.textContent = twaVal;
-        const miniMin = document.getElementById(`mini-${p}-min`);
-        if (miniMin) miniMin.textContent = minVal;
-        const miniMax = document.getElementById(`mini-${p}-max`);
-        if (miniMax) miniMax.textContent = maxVal;
-        const miniChange = document.getElementById(`mini-${p}-change`);
-        if (miniChange) miniChange.textContent = changeVal;
     }
-
-    // Update Hero Bar quick readings
-    const t = data.temperature || {};
-    const h = data.humidity || {};
-    const w = data.windspeed || {};
-    const d = data.dew_point || {};
-    const heroTemp = document.getElementById('hero-quick-temp');
-    if (heroTemp) heroTemp.textContent = t.latest !== null && t.latest !== undefined ? `${t.latest.toFixed(2)} °C` : '--';
-    const heroHum = document.getElementById('hero-quick-hum');
-    if (heroHum) heroHum.textContent = h.latest !== null && h.latest !== undefined ? `${h.latest.toFixed(2)} %` : '--';
-    const heroWind = document.getElementById('hero-quick-wind');
-    if (heroWind) heroWind.textContent = w.latest !== null && w.latest !== undefined ? `${w.latest.toFixed(2)} m/s` : '--';
-    const heroDew = document.getElementById('hero-quick-dew');
-    if (heroDew) heroDew.textContent = d.latest !== null && d.latest !== undefined ? `${d.latest.toFixed(2)} °C` : '--';
 }
 
 /**
  * Update single-metric stats cards
  */
 function updateSingleMetricStats(data, metric) {
-    const config = METRIC_CONFIGS[metric] || { unit: '' };
+    const config = METRIC_CONFIGS[metric] || { unit: '', title: metric };
     const u = config.unit || data.unit || '';
-    const valFormatted = data.latest !== null && data.latest !== undefined ? `${data.latest.toFixed(2)} ${u}` : '--';
-    const avgFormatted = data.sample_mean !== null && data.sample_mean !== undefined ? `${data.sample_mean.toFixed(2)} ${u}` : (data.avg !== null && data.avg !== undefined ? `${data.avg.toFixed(2)} ${u}` : '--');
-    const twaFormatted = data.time_weighted_mean !== null && data.time_weighted_mean !== undefined ? `${data.time_weighted_mean.toFixed(2)} ${u}` : '--';
-    const minFormatted = data.min !== null && data.min !== undefined ? `${data.min.toFixed(2)} ${u}` : '--';
-    const maxFormatted = data.max !== null && data.max !== undefined ? `${data.max.toFixed(2)} ${u}` : '--';
-    const countFormatted = data.sample_count !== null && data.sample_count !== undefined ? `${data.sample_count}` : (data.count !== null && data.count !== undefined ? `${data.count}` : '--');
-    const ageFormatted = formatReadingAge(data.reading_age_seconds);
-    const changeFormatted = formatPeriodChange(data.change_details, u);
+    const mean = data.sample_mean !== null && data.sample_mean !== undefined ? data.sample_mean : data.avg;
+    const count = data.sample_count !== null && data.sample_count !== undefined ? data.sample_count : data.count;
+    const set = (id, text) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+    };
 
-    document.getElementById('stat-latest').textContent = valFormatted;
-    document.getElementById('stat-latest-time').textContent = data.latest_t ? formatFullTimestamp(data.latest_t) : '';
-    document.getElementById('stat-avg').textContent = avgFormatted;
-    const statTwa = document.getElementById('stat-twa');
-    if (statTwa) statTwa.textContent = twaFormatted;
-    document.getElementById('stat-min').textContent = minFormatted;
-    document.getElementById('stat-max').textContent = maxFormatted;
-    const statCount = document.getElementById('stat-count');
-    if (statCount) statCount.textContent = countFormatted;
+    // The figures take the colour and the name of the measurement they describe
+    const container = document.getElementById('stats-container');
+    if (container) container.dataset.metric = config.id || metric;
+    set('single-metric-title', config.title);
+
+    setReading(document.getElementById('stat-latest'), data.latest, u);
+    set('stat-latest-time', data.latest_t ? formatFullTimestamp(data.latest_t) : '');
+    set('stat-avg', formatValue(mean, u));
+    set('stat-twa', formatValue(data.time_weighted_mean, u));
+    set('stat-min', formatValue(data.min, u));
+    set('stat-max', formatValue(data.max, u));
+    set('stat-count', count !== null && count !== undefined ? `${count}` : '--');
+    set('stat-change', formatPeriodChange(data.change_details, u));
+
     const statAge = document.getElementById('stat-age');
     if (statAge) {
-        statAge.textContent = ageFormatted;
+        statAge.textContent = formatReadingAge(data.reading_age_seconds);
         statAge.dataset.readingTimestamp = data.latest_t || '';
     }
-    const statChange = document.getElementById('stat-change');
-    if (statChange) statChange.textContent = changeFormatted;
-    const statChangeFootnote = document.getElementById('stat-change-footnote');
-    if (statChangeFootnote) {
-        if (data.change_details && data.change_details.available) {
-            statChangeFootnote.textContent = `vs preceding equal-duration period (${data.time_window || ''})`;
-        } else if (data.change_details && data.change_details.reason) {
-            statChangeFootnote.textContent = data.change_details.reason;
-        } else {
-            statChangeFootnote.textContent = 'vs preceding equal period';
-        }
+    const footnote = document.getElementById('stat-change-footnote');
+    if (footnote) {
+        footnote.textContent = (data.change_details && data.change_details.available) ? 'against the period before' : '';
     }
-
-    // Update the selected metric in hero bar and clear unselected metrics to prevent stale station leakage
-    const heroTemp = document.getElementById('hero-quick-temp');
-    const heroHum = document.getElementById('hero-quick-hum');
-    const heroWind = document.getElementById('hero-quick-wind');
-    const heroDew = document.getElementById('hero-quick-dew');
-
-    if (heroTemp) heroTemp.textContent = (metric === 'temperature') ? valFormatted : '--';
-    if (heroHum) heroHum.textContent = (metric === 'humidity') ? valFormatted : '--';
-    if (heroWind) heroWind.textContent = (metric === 'windspeed' || metric === 'wind_speed') ? valFormatted : '--';
-    if (heroDew) heroDew.textContent = (metric === 'dew_point' || metric === 'dewpoint') ? valFormatted : '--';
 }
 
 /**
@@ -1168,14 +1079,14 @@ function showStationEmptyState(station, range) {
             const rangeText = (rangeElem && rangeElem.selectedIndex >= 0)
                 ? rangeElem.options[rangeElem.selectedIndex].textContent
                 : range;
-            textEl.textContent = `No telemetry readings recorded for Station "${station}" in window "${rangeText}".`;
+            textEl.textContent = `${station} sent nothing in this time range (${rangeText.toLowerCase()}).`;
         }
         el.style.display = 'block';
     }
-    document.getElementById('multi-panels-container').style.display = 'none';
-    document.getElementById('chart-container').style.display = 'none';
-    const tableCont = document.getElementById('table-container');
-    if (tableCont) tableCont.style.display = 'none';
+    ['multi-stats-container', 'stats-container', 'chart-container', 'table-container'].forEach(id => {
+        const part = document.getElementById(id);
+        if (part) part.style.display = 'none';
+    });
 }
 
 /**
@@ -1309,7 +1220,7 @@ async function fetchReadings(queryParams, signal, fetchId, station, metric, rang
     } catch (error) {
         if (error.name === 'AbortError') return null;
         console.error('[Error] Failed to fetch readings:', error);
-        showErrorBanner('Failed to fetch telemetry readings. Please check server or database.');
+        showErrorBanner('Could not load readings. Check that the server is running, then try again.');
         throw error;
     }
 }
@@ -1323,25 +1234,17 @@ function updateMetaChips(totalCount, isAggregated, gapCount = 0) {
     const gapChip = document.getElementById('meta-gaps');
 
     if (countChip) {
-        countChip.textContent = `${totalCount} samples`;
+        countChip.textContent = `${totalCount} ${totalCount === 1 ? 'reading' : 'readings'}`;
     }
 
     if (aggChip) {
-        if (isAggregated) {
-            aggChip.style.display = 'inline-flex';
-            aggChip.textContent = 'Peak/trough preserved';
-        } else {
-            aggChip.style.display = 'none';
-        }
+        aggChip.style.display = isAggregated ? 'inline-flex' : 'none';
+        aggChip.textContent = 'Chart simplified, peaks kept';
     }
 
     if (gapChip) {
-        if (gapCount > 0) {
-            gapChip.style.display = 'inline-flex';
-            gapChip.textContent = `${gapCount} gap${gapCount > 1 ? 's' : ''} detected`;
-        } else {
-            gapChip.style.display = 'none';
-        }
+        gapChip.style.display = gapCount > 0 ? 'inline-flex' : 'none';
+        gapChip.textContent = gapCount === 1 ? '1 gap in the data' : `${gapCount} gaps in the data`;
     }
 }
 
@@ -1684,15 +1587,169 @@ function refreshAllPanelsData(seriesMap, rawEnabled, rollingEnabled, windowSize,
 }
 
 /**
- * Render three vertically aligned panels for Temperature, Humidity, and Wind Speed
- * Using a shared continuous linear time axis (S1, S2, S3)
+ * The two lines every chart can carry: the readings and their rolling average
+ */
+function buildChartDatasets(config, rawData, rollingData, rawEnabled, rollingEnabled, windowSize) {
+    const mColors = getThemedMetricColors(config);
+    const tokens = getChartThemeTokens();
+    const datasets = [];
+
+    if (rawEnabled) {
+        datasets.push({
+            id: 'raw',
+            label: config.title,
+            data: rawData,
+            borderColor: mColors.rawBorder,
+            backgroundColor: mColors.rawBg,
+            borderWidth: 2,
+            fill: false,
+            tension: 0.15,
+            clip: 4, // a line that touches the top or bottom tick keeps its full width
+            spanGaps: false, // a gap in the data stays a break in the line
+            pointRadius: rawData.length > 60 ? 0 : 3,
+            pointHoverRadius: 5,
+            pointBackgroundColor: mColors.color,
+            pointHoverBackgroundColor: mColors.color,
+            pointBorderColor: tokens.pointBorder,
+            pointBorderWidth: 2,
+        });
+    }
+
+    if (rollingEnabled && rollingData.length > 0) {
+        datasets.push({
+            id: 'rolling',
+            label: `Average of ${windowSize}`,
+            data: rollingData,
+            borderColor: mColors.rollingBorder,
+            backgroundColor: 'transparent',
+            borderWidth: 1.5,
+            borderDash: [4, 4],
+            fill: false,
+            tension: 0.25,
+            spanGaps: false,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+        });
+    }
+
+    return datasets;
+}
+
+/**
+ * Shared chart options: one quiet look for the four rows and for the single chart
+ */
+function buildChartOptions(config, range, minTime, maxTime, { showTimeAxis, maxTimeTicks }) {
+    const tokens = getChartThemeTokens();
+    const tickFont = { family: CHART_FONT, size: 13 };
+
+    return {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        layout: {
+            padding: { top: 8, right: 4, bottom: 0, left: 0 }
+        },
+        interaction: {
+            mode: 'nearest',
+            axis: 'x',
+            intersect: false,
+        },
+        plugins: {
+            // The line options above the charts are the key, so no legend is drawn per chart
+            legend: {
+                display: false,
+                labels: { color: tokens.legendColor }
+            },
+            tooltip: {
+                enabled: true,
+                backgroundColor: tokens.tooltipBg,
+                titleColor: tokens.tooltipInk,
+                bodyColor: tokens.tooltipInk,
+                borderWidth: 0,
+                padding: 12,
+                cornerRadius: 8,
+                boxWidth: 8,
+                boxHeight: 8,
+                boxPadding: 6,
+                usePointStyle: true,
+                titleFont: { family: CHART_FONT, size: 13, weight: '400' },
+                bodyFont: { family: CHART_FONT, size: 14, weight: '500' },
+                callbacks: {
+                    labelColor: (context) => {
+                        const fill = context.dataset.id === 'rolling' ? tokens.tooltipInk : context.dataset.borderColor;
+                        return { borderColor: fill, backgroundColor: context.dataset.id === 'rolling' ? 'transparent' : fill, borderWidth: 2 };
+                    },
+                    title: (tooltipItems) => {
+                        if (!tooltipItems.length) return '';
+                        const rawObj = tooltipItems[0].raw;
+                        const pt = rawObj ? rawObj.raw : null;
+                        return pt ? formatFullTimestamp(pt.t) : formatFullTimestamp(new Date(tooltipItems[0].parsed.x).toISOString());
+                    },
+                    label: (context) => {
+                        const rawObj = context.raw;
+                        const pt = rawObj ? rawObj.raw : null;
+                        if (!pt || pt.v === null || context.parsed.y === null) {
+                            return `${context.dataset.label}: no reading`;
+                        }
+
+                        let line = `${context.dataset.label}: ${context.parsed.y.toFixed(1)} ${config.unit}`;
+                        if (pt.aggregated && context.dataset.id === 'raw') {
+                            line += ` (${pt.count} readings, ${Number(pt.min).toFixed(1)} to ${Number(pt.max).toFixed(1)})`;
+                        }
+                        return line;
+                    }
+                }
+            }
+        },
+        scales: {
+            y: {
+                beginAtZero: false,
+                border: { display: false },
+                grid: { color: tokens.gridY, drawTicks: false },
+                // Every chart keeps the same axis width, so the four time axes line up
+                afterFit: (scale) => { scale.width = 52; },
+                ticks: {
+                    color: tokens.tickColor,
+                    font: tickFont,
+                    maxTicksLimit: 6,
+                    padding: 8
+                }
+            },
+            x: {
+                type: 'linear',
+                min: minTime,
+                max: maxTime,
+                border: { display: false },
+                grid: { display: false, color: tokens.gridX },
+                // No side padding for the end labels: the four plots share their left and right edges
+                afterFit: (scale) => { scale.paddingLeft = 0; scale.paddingRight = 0; },
+                ticks: {
+                    display: showTimeAxis,
+                    color: tokens.tickColor,
+                    autoSkip: true,
+                    align: 'inner',
+                    maxTicksLimit: window.innerWidth <= 480 ? 4 : maxTimeTicks,
+                    maxRotation: 0,
+                    padding: 8,
+                    font: tickFont,
+                    callback: function(value) {
+                        return formatAxisTime(new Date(value).toISOString(), range);
+                    }
+                }
+            }
+        }
+    };
+}
+
+/**
+ * Render the four stacked charts for temperature, humidity, wind speed and dew point
+ * on one shared continuous time axis (S1, S2, S3)
  */
 function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, range) {
     let totalGaps = 0;
     let anyAggregated = false;
     const metrics = ['temperature', 'humidity', 'windspeed', 'dew_point'];
     const { minTime, maxTime } = getCommonTimeBounds(seriesMap);
-    const tokens = getChartThemeTokens();
 
     for (const m of metrics) {
         const rawPoints = seriesMap[m] || [];
@@ -1706,7 +1763,6 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
         if (isAggregated) anyAggregated = true;
 
         const config = METRIC_CONFIGS[m];
-        const mColors = getThemedMetricColors(config);
         const ctx = document.getElementById(config.canvasId);
         if (!ctx) continue;
 
@@ -1714,142 +1770,16 @@ function renderAlignedPanels(seriesMap, rawEnabled, rollingEnabled, windowSize, 
             charts[m].destroy();
         }
 
-        const datasets = [];
-
-        if (rawEnabled) {
-            datasets.push({
-                id: 'raw',
-                label: `Raw trace (${config.unit})`,
-                data: rawData,
-                borderColor: mColors.rawBorder,
-                backgroundColor: mColors.rawBg,
-                borderWidth: 1.6,
-                fill: true,
-                tension: 0.18,
-                spanGaps: false, // Ensures missing data renders as explicit line breaks (S4)
-                pointRadius: rawData.length > 120 ? 0 : 2,
-                pointHoverRadius: 4,
-                pointBackgroundColor: mColors.color,
-                pointBorderColor: tokens.pointBorder,
-                pointBorderWidth: 1,
-            });
-        }
-
-        if (rollingEnabled && rollingData.length > 0) {
-            datasets.push({
-                id: 'rolling',
-                label: `Rolling mean (${windowSize})`,
-                data: rollingData,
-                borderColor: mColors.rollingBorder,
-                backgroundColor: 'transparent',
-                borderWidth: 2.1,
-                borderDash: [5, 3],
-                fill: false,
-                tension: 0.25,
-                spanGaps: false,
-                pointRadius: 0,
-                pointHoverRadius: 4,
-            });
-        }
-
         charts[m] = new Chart(ctx, {
             type: 'line',
             data: {
-                datasets: datasets
+                datasets: buildChartDatasets(config, rawData, rollingData, rawEnabled, rollingEnabled, windowSize)
             },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                animation: false,
-                layout: {
-                    padding: { top: 6, right: 10, bottom: 2, left: 0 }
-                },
-                interaction: {
-                    mode: 'nearest',
-                    axis: 'x',
-                    intersect: false,
-                },
-                plugins: {
-                    legend: {
-                        display: true,
-                        position: 'top',
-                        align: 'end',
-                        labels: {
-                            boxWidth: 12,
-                            boxHeight: 2,
-                            padding: 8,
-                            color: tokens.legendColor,
-                            font: { family: '"Instrument Sans", -apple-system, sans-serif', size: 10.5, weight: '600' }
-                        }
-                    },
-                    tooltip: {
-                        enabled: true,
-                        backgroundColor: tokens.tooltipBg,
-                        titleColor: '#f8fafc',
-                        bodyColor: '#e2e8f0',
-                        borderColor: tokens.tooltipBorder,
-                        borderWidth: 1,
-                        padding: 9,
-                        cornerRadius: 4,
-                        titleFont: { family: '"JetBrains Mono", monospace', size: 11 },
-                        bodyFont: { family: '"JetBrains Mono", monospace', size: 11 },
-                        callbacks: {
-                            title: (tooltipItems) => {
-                                if (!tooltipItems.length) return '';
-                                const rawObj = tooltipItems[0].raw;
-                                const pt = rawObj ? rawObj.raw : null;
-                                return pt ? formatFullTimestamp(pt.t) : formatFullTimestamp(new Date(tooltipItems[0].parsed.x).toISOString());
-                            },
-                            label: (context) => {
-                                const rawObj = context.raw;
-                                const pt = rawObj ? rawObj.raw : null;
-                                if (!pt || pt.v === null || context.parsed.y === null) {
-                                    return `${context.dataset.label}: [Missing / Gap]`;
-                                }
-
-                                let line = `${context.dataset.label}: ${context.parsed.y.toFixed(2)} ${config.unit}`;
-                                if (pt.aggregated && context.dataset.id === 'raw') {
-                                    line += ` (Bucket: min ${pt.min}, max ${pt.max}, avg ${pt.avg})`;
-                                }
-                                return line;
-                            }
-                        }
-                    }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: false,
-                        grace: '8%',
-                        grid: { color: tokens.gridY },
-                        title: {
-                            display: true,
-                            text: config.unit,
-                            color: tokens.tickColor,
-                            font: { family: '"JetBrains Mono", monospace', size: 10, weight: '600' }
-                        },
-                        ticks: {
-                            color: tokens.tickColor,
-                            font: { family: '"JetBrains Mono", monospace', size: 10 }
-                        }
-                    },
-                    x: {
-                        type: 'linear',
-                        min: minTime,
-                        max: maxTime,
-                        grid: { color: tokens.gridX },
-                        ticks: {
-                            color: tokens.tickColor,
-                            autoSkip: true,
-                            maxTicksLimit: window.innerWidth <= 480 ? 5 : 7,
-                            maxRotation: 0,
-                            font: { family: '"JetBrains Mono", monospace', size: 10 },
-                            callback: function(value) {
-                                return formatAxisTime(new Date(value).toISOString(), range);
-                            }
-                        }
-                    }
-                }
-            }
+            // The times are written once, under the last chart
+            options: buildChartOptions(config, range, minTime, maxTime, {
+                showTimeAxis: m === 'dew_point',
+                maxTimeTicks: 8
+            })
         });
     }
 
@@ -1872,15 +1802,10 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
     }
 
     const config = METRIC_CONFIGS[metric] || {
+        id: 'temperature',
         title: metric.charAt(0).toUpperCase() + metric.slice(1),
-        unit: '',
-        color: '#0b6e99',
-        rawBorder: '#0b6e99',
-        rawBg: 'rgba(11, 110, 153, 0.08)',
-        rollingBorder: '#0f1b29'
+        unit: ''
     };
-    const mColors = getThemedMetricColors(config);
-    const tokens = getChartThemeTokens();
 
     const { rawData, rollingData, gapCount, isAggregated } = prepareSeriesForContinuousAxis(
         points,
@@ -1905,44 +1830,6 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
         maxTime = now;
     }
 
-    const datasets = [];
-
-    if (rawEnabled) {
-        datasets.push({
-            id: 'raw',
-            label: `Raw ${config.title} (${config.unit})`,
-            data: rawData,
-            borderColor: mColors.rawBorder,
-            backgroundColor: mColors.rawBg,
-            borderWidth: 2,
-            fill: true,
-            tension: 0.2,
-            spanGaps: false,
-            pointRadius: rawData.length > 150 ? 0 : 2.5,
-            pointHoverRadius: 5,
-            pointBackgroundColor: mColors.color,
-            pointBorderColor: tokens.pointBorder,
-            pointBorderWidth: 1.5,
-        });
-    }
-
-    if (rollingEnabled && rollingData.length > 0) {
-        datasets.push({
-            id: 'rolling',
-            label: `Rolling mean (${windowSize})`,
-            data: rollingData,
-            borderColor: mColors.rollingBorder,
-            backgroundColor: 'transparent',
-            borderWidth: 2.4,
-            borderDash: [6, 3],
-            fill: false,
-            tension: 0.25,
-            spanGaps: false,
-            pointRadius: 0,
-            pointHoverRadius: 5,
-        });
-    }
-
     ctx.style.display = 'block';
     const chartLoading = document.getElementById('chart-loading');
     if (chartLoading) chartLoading.style.display = 'none';
@@ -1950,101 +1837,12 @@ function renderSingleChart(metric, points, rawEnabled, rollingEnabled, windowSiz
     chart = new Chart(ctx, {
         type: 'line',
         data: {
-            datasets: datasets
+            datasets: buildChartDatasets(config, rawData, rollingData, rawEnabled, rollingEnabled, windowSize)
         },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: false,
-            layout: {
-                padding: { top: 6, right: 10, bottom: 2, left: 0 }
-            },
-            interaction: {
-                mode: 'nearest',
-                axis: 'x',
-                intersect: false,
-            },
-            plugins: {
-                legend: {
-                    display: true,
-                    position: 'top',
-                    align: 'end',
-                    labels: {
-                        boxWidth: 14,
-                        boxHeight: 2,
-                        padding: 12,
-                        color: tokens.legendColor,
-                        font: { family: '"Instrument Sans", -apple-system, sans-serif', size: 11.5, weight: '600' }
-                    }
-                },
-                tooltip: {
-                    enabled: true,
-                    backgroundColor: tokens.tooltipBg,
-                    titleColor: '#f8fafc',
-                    bodyColor: '#e2e8f0',
-                    borderColor: tokens.tooltipBorder,
-                    borderWidth: 1,
-                    padding: 10,
-                    cornerRadius: 4,
-                    titleFont: { family: '"JetBrains Mono", monospace', size: 11 },
-                    bodyFont: { family: '"JetBrains Mono", monospace', size: 11 },
-                    callbacks: {
-                        title: (tooltipItems) => {
-                            if (!tooltipItems.length) return '';
-                            const rawObj = tooltipItems[0].raw;
-                            const pt = rawObj ? rawObj.raw : null;
-                            return pt ? formatFullTimestamp(pt.t) : formatFullTimestamp(new Date(tooltipItems[0].parsed.x).toISOString());
-                        },
-                        label: (context) => {
-                            const rawObj = context.raw;
-                            const pt = rawObj ? rawObj.raw : null;
-                            if (!pt || pt.v === null || context.parsed.y === null) {
-                                return `${context.dataset.label}: [Missing / Gap]`;
-                            }
-
-                            let line = `${context.dataset.label}: ${context.parsed.y.toFixed(2)} ${config.unit}`;
-                            if (pt.aggregated && context.dataset.id === 'raw') {
-                                line += ` (Bucket: min ${pt.min}, max ${pt.max}, avg ${pt.avg})`;
-                            }
-                            return line;
-                        }
-                    }
-                }
-            },
-            scales: {
-                y: {
-                    beginAtZero: false,
-                    grace: '8%',
-                    grid: { color: tokens.gridY },
-                    title: {
-                        display: true,
-                        text: config.unit,
-                        color: tokens.tickColor,
-                        font: { family: '"JetBrains Mono", monospace', size: 10.5, weight: '600' }
-                    },
-                    ticks: {
-                        color: tokens.tickColor,
-                        font: { family: '"JetBrains Mono", monospace', size: 10.5 }
-                    }
-                },
-                x: {
-                    type: 'linear',
-                    min: minTime,
-                    max: maxTime,
-                    grid: { color: tokens.gridX },
-                    ticks: {
-                        color: tokens.tickColor,
-                        autoSkip: true,
-                        maxTicksLimit: window.innerWidth <= 480 ? 5 : 10,
-                        maxRotation: 0,
-                        font: { family: '"JetBrains Mono", monospace', size: 10.5 },
-                        callback: function(value) {
-                            return formatAxisTime(new Date(value).toISOString(), range);
-                        }
-                    }
-                }
-            }
-        }
+        options: buildChartOptions(config, range, minTime, maxTime, {
+            showTimeAxis: true,
+            maxTimeTicks: 10
+        })
     });
 
     charts.single = chart;
@@ -2103,11 +1901,11 @@ function renderAccessibleTable() {
 
     if (metricMode === 'all') {
         theadRow.innerHTML = `
-            <th scope="col">Timestamp (UTC)</th>
-            <th scope="col">Temperature (°C)</th>
-            <th scope="col">Humidity (%)</th>
-            <th scope="col">Wind Speed (m/s)</th>
-            <th scope="col">Dew Point (Calculated) (°C)</th>
+            <th scope="col">Time (UTC)</th>
+            <th scope="col">Temperature, °C</th>
+            <th scope="col">Humidity, %</th>
+            <th scope="col">Wind speed, m/s</th>
+            <th scope="col">Dew point, °C</th>
         `;
 
         // Align rows by timestamp
@@ -2130,11 +1928,11 @@ function renderAccessibleTable() {
         });
 
         const sortedTimestamps = Array.from(timeMap.keys()).sort();
-        if (summaryChip) summaryChip.textContent = `${sortedTimestamps.length} records`;
-        if (captionEl) captionEl.textContent = `Weather telemetry records for all metrics: ${sortedTimestamps.length} entries`;
+        if (summaryChip) summaryChip.textContent = `${sortedTimestamps.length} readings`;
+        if (captionEl) captionEl.textContent = `Readings for all four measurements: ${sortedTimestamps.length} rows`;
 
         if (sortedTimestamps.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 24px; color: var(--text-muted);">No records to display</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="5" class="table-empty">No readings in this time range</td></tr>`;
             return;
         }
 
@@ -2155,16 +1953,16 @@ function renderAccessibleTable() {
     } else {
         const config = METRIC_CONFIGS[metricMode] || { title: metricMode, unit: '' };
         theadRow.innerHTML = `
-            <th scope="col">Timestamp (UTC)</th>
-            <th scope="col">${config.title} (${config.unit})</th>
+            <th scope="col">Time (UTC)</th>
+            <th scope="col">${config.title}, ${config.unit}</th>
         `;
 
         const points = currentRawPoints || [];
-        if (summaryChip) summaryChip.textContent = `${points.length} records`;
-        if (captionEl) captionEl.textContent = `Weather telemetry records for ${config.title}: ${points.length} entries`;
+        if (summaryChip) summaryChip.textContent = `${points.length} readings`;
+        if (captionEl) captionEl.textContent = `${config.title} readings: ${points.length} rows`;
 
         if (points.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="2" style="text-align:center; padding: 24px; color: var(--text-muted);">No records to display</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="2" class="table-empty">No readings in this time range</td></tr>`;
             return;
         }
 
@@ -2232,7 +2030,7 @@ window.copyTableAsCsv = function() {
             const btn = document.getElementById('btn-copy-csv');
             if (btn) {
                 const orig = btn.innerHTML;
-                btn.innerHTML = `<span aria-hidden="true">✓</span> Copied!`;
+                btn.textContent = 'Copied';
                 setTimeout(() => { btn.innerHTML = orig; }, 2000);
             }
         }).catch(err => {
@@ -2247,23 +2045,14 @@ window.copyTableAsCsv = function() {
 function showEmptyState() {
     document.getElementById('empty-state').style.display = 'block';
     hideStationEmptyState();
-    document.getElementById('stats-container').style.display = 'none';
-    document.getElementById('multi-stats-container').style.display = 'none';
-    document.getElementById('multi-panels-container').style.display = 'none';
-    document.getElementById('chart-container').style.display = 'none';
-    const tableCont = document.getElementById('table-container');
-    if (tableCont) tableCont.style.display = 'none';
-
-    const heroTemp = document.getElementById('hero-quick-temp');
-    if (heroTemp) heroTemp.textContent = '--';
-    const heroHum = document.getElementById('hero-quick-hum');
-    if (heroHum) heroHum.textContent = '--';
-    const heroWind = document.getElementById('hero-quick-wind');
-    if (heroWind) heroWind.textContent = '--';
-    const heroDew = document.getElementById('hero-quick-dew');
-    if (heroDew) heroDew.textContent = '--';
+    ['multi-stats-container', 'stats-container', 'chart-container', 'table-container'].forEach(id => {
+        const part = document.getElementById(id);
+        if (part) part.style.display = 'none';
+    });
     const contextStation = document.getElementById('context-station-name');
-    if (contextStation) contextStation.textContent = 'None';
+    if (contextStation) contextStation.textContent = 'No station';
+    const count = document.getElementById('meta-points-count');
+    if (count) count.textContent = 'no readings';
 }
 
 /**
@@ -2305,7 +2094,7 @@ function formatFullTimestamp(isoString) {
             hour: '2-digit',
             minute: '2-digit',
             second: '2-digit',
-            hour12: true
+            hour12: false
         });
     } catch (e) {
         return isoString;
